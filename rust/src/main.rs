@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     // Start background cache refresh task
     let _cache_refresh_handle = market_cache::spawn_cache_refresh_task();
 
-    let cfg = Settings::from_env()?;
+    let cfg = Config::from_env()?;
     
     let (client, creds) = build_worker_state(
         cfg.private_key.clone(),
