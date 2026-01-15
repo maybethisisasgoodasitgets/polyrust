@@ -63,8 +63,8 @@ impl MarketCaches {
         Self {
             neg_risk: RwLock::new(FxHashMap::default()),
             slugs: RwLock::new(FxHashMap::default()),
-            atp_tokens: RwLock::new(FxHashMap::default()),
-            ligue1_tokens: RwLock::new(FxHashMap::default()),
+            tennis_tokens: RwLock::new(FxHashMap::default()),
+            soccer_tokens: RwLock::new(FxHashMap::default()),
             live_status: RwLock::new(FxHashMap::default()),
             last_refresh: AtomicU64::new(0),
             stats: CacheStats::default(),
@@ -102,28 +102,28 @@ impl MarketCaches {
             }
         }
 
-        // Load ATP tokens cache
+        // Load ATP tokens cache (tennis)
         if let Ok(data) = std::fs::read_to_string(ATP_TOKENS_CACHE_PATH) {
             if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data) {
                 let count = map.len();
-                if let Ok(mut cache) = self.atp_tokens.write() {
+                if let Ok(mut cache) = self.tennis_tokens.write() {
                     cache.clear();
                     cache.extend(map.into_iter());
                     result.atp_loaded = count;
-                    self.stats.atp_count.store(count as u64, Ordering::Relaxed);
+                    self.stats.tennis_count.store(count as u64, Ordering::Relaxed);
                 }
             }
         }
 
-        // Load Ligue 1 tokens cache
+        // Load Ligue 1 tokens cache (soccer)
         if let Ok(data) = std::fs::read_to_string(LIGUE1_TOKENS_CACHE_PATH) {
             if let Ok(tokens) = serde_json::from_str::<Vec<String>>(&data) {
                 let count = tokens.len();
-                if let Ok(mut cache) = self.ligue1_tokens.write() {
+                if let Ok(mut cache) = self.soccer_tokens.write() {
                     cache.clear();
                     cache.extend(tokens.into_iter().map(|t| (t, ())));
                     result.ligue1_loaded = count;
-                    self.stats.ligue1_count.store(count as u64, Ordering::Relaxed);
+                    self.stats.soccer_count.store(count as u64, Ordering::Relaxed);
                 }
             }
         }
@@ -168,28 +168,40 @@ impl MarketCaches {
         self.slugs.read().ok()?.get(token_id).cloned()
     }
 
-    /// Check if token is ATP market
+    /// Check if token is ATP/tennis market
     #[inline]
     pub fn is_atp_token(&self, token_id: &str) -> bool {
-        self.atp_tokens.read().map(|c| c.contains_key(token_id)).unwrap_or(false)
+        self.tennis_tokens.read().map(|c| c.contains_key(token_id)).unwrap_or(false)
     }
 
-    /// Check if token is Ligue 1 market
+    /// Check if token is tennis market (alias for is_atp_token)
+    #[inline]
+    pub fn is_tennis_token(&self, token_id: &str) -> bool {
+        self.is_atp_token(token_id)
+    }
+
+    /// Check if token is Ligue 1/soccer market
     #[inline]
     pub fn is_ligue1_token(&self, token_id: &str) -> bool {
-        self.ligue1_tokens.read().map(|c| c.contains_key(token_id)).unwrap_or(false)
+        self.soccer_tokens.read().map(|c| c.contains_key(token_id)).unwrap_or(false)
+    }
+
+    /// Check if token is soccer market (alias for is_ligue1_token)
+    #[inline]
+    pub fn is_soccer_token(&self, token_id: &str) -> bool {
+        self.is_ligue1_token(token_id)
     }
 
     /// Get ATP buffer for token (0.01 if ATP, 0.0 otherwise)
     #[inline]
     pub fn get_atp_buffer(&self, token_id: &str) -> f64 {
-        if self.is_atp_token(token_id) { ATP_BUFFER } else { 0.0 }
+        if self.is_atp_token(token_id) { TENNIS_BUFFER } else { 0.0 }
     }
 
     /// Get Ligue 1 buffer for token (0.01 if Ligue1, 0.0 otherwise)
     #[inline]
     pub fn get_ligue1_buffer(&self, token_id: &str) -> f64 {
-        if self.is_ligue1_token(token_id) { LIGUE1_BUFFER } else { 0.0 }
+        if self.is_ligue1_token(token_id) { SOCCER_BUFFER } else { 0.0 }
     }
 
     /// Get live status for token (for GTD expiry calculation)
@@ -215,11 +227,11 @@ impl MarketCaches {
     /// Get cache statistics summary
     pub fn get_stats_summary(&self) -> String {
         format!(
-            "Caches: neg_risk={}, slugs={}, atp={}, ligue1={}, refreshes={}",
+            "Caches: neg_risk={}, slugs={}, tennis={}, soccer={}, refreshes={}",
             self.stats.neg_risk_count.load(Ordering::Relaxed),
             self.stats.slug_count.load(Ordering::Relaxed),
-            self.stats.atp_count.load(Ordering::Relaxed),
-            self.stats.ligue1_count.load(Ordering::Relaxed),
+            self.stats.tennis_count.load(Ordering::Relaxed),
+            self.stats.soccer_count.load(Ordering::Relaxed),
             self.stats.refresh_count.load(Ordering::Relaxed),
         )
     }
@@ -362,8 +374,8 @@ mod tests {
         let caches = MarketCaches::new();
         assert!(caches.neg_risk.read().unwrap().is_empty());
         assert!(caches.slugs.read().unwrap().is_empty());
-        assert!(caches.atp_tokens.read().unwrap().is_empty());
-        assert!(caches.ligue1_tokens.read().unwrap().is_empty());
+        assert!(caches.tennis_tokens.read().unwrap().is_empty());
+        assert!(caches.soccer_tokens.read().unwrap().is_empty());
     }
 
     #[test]
@@ -384,8 +396,8 @@ mod tests {
 
     #[test]
     fn test_buffer_values() {
-        assert_eq!(ATP_BUFFER, 0.01);
-        assert_eq!(LIGUE1_BUFFER, 0.01);
+        assert_eq!(TENNIS_BUFFER, 0.01);
+        assert_eq!(SOCCER_BUFFER, 0.01);
     }
 
     #[test]

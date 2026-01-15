@@ -1,6 +1,6 @@
-/// Risk management and safety guard for trade execution
-/// Provides protection against dangerous market conditions
 #![allow(dead_code)]
+//! Risk management and safety guard for trade execution
+//! Provides protection against dangerous market conditions
 
 use rustc_hash::FxHashMap;
 use std::time::{Duration, Instant};
@@ -108,12 +108,12 @@ impl Default for TokenState {
 // =============================================================================
 
 pub struct RiskGuard {
-    config: CircuitBreakerConfig,
+    config: RiskGuardConfig,
     tokens: FxHashMap<String, TokenState>,
 }
 
 impl RiskGuard {
-    pub fn new(config: CircuitBreakerConfig) -> Self {
+    pub fn new(config: RiskGuardConfig) -> Self {
         Self {
             config,
             tokens: FxHashMap::default(),
@@ -122,7 +122,7 @@ impl RiskGuard {
     
     /// Hot path - no allocations if token exists
     #[inline]
-    pub fn check_fast(&mut self, token_id: &str, whale_shares: f64) -> Evaluation {
+    pub fn check_fast(&mut self, token_id: &str, whale_shares: f64) -> SafetyEvaluation {
         let now = Instant::now();
         
         // Use entry API - single lookup instead of get_mut + insert + get_mut
@@ -131,9 +131,9 @@ impl RiskGuard {
         // Check trip
         if let Some(until) = state.tripped_until {
             if now < until {
-                return Evaluation {
-                    decision: Decision::Block,
-                    reason: Reason::Tripped {
+                return SafetyEvaluation {
+                    decision: SafetyDecision::Block,
+                    reason: SafetyReason::Tripped {
                         secs_left: (until - now).as_secs() as u32,
                     },
                     consecutive_large: 0,
@@ -144,9 +144,9 @@ impl RiskGuard {
         
         // Small trade - fast path
         if whale_shares < self.config.large_trade_shares {
-            return Evaluation {
-                decision: Decision::Allow,
-                reason: Reason::SmallTrade,
+            return SafetyEvaluation {
+                decision: SafetyDecision::Allow,
+                reason: SafetyReason::SmallTrade,
                 consecutive_large: 0,
             };
         }
@@ -171,15 +171,15 @@ impl RiskGuard {
         let count = consecutive.min(255) as u8;
         
         if consecutive >= self.config.consecutive_trigger as usize {
-            Evaluation {
-                decision: Decision::FetchBook,
-                reason: Reason::SeqNeedBook { count },
+            SafetyEvaluation {
+                decision: SafetyDecision::FetchBook,
+                reason: SafetyReason::SeqNeedBook { count },
                 consecutive_large: count,
             }
         } else {
-            Evaluation {
-                decision: Decision::Allow,
-                reason: Reason::SeqOk { count },
+            SafetyEvaluation {
+                decision: SafetyDecision::Allow,
+                reason: SafetyReason::SeqOk { count },
                 consecutive_large: count,
             }
         }
@@ -191,7 +191,7 @@ impl RiskGuard {
         token_id: &str,
         consecutive: u8,
         depth_beyond_usd: f64,
-    ) -> Evaluation {
+    ) -> SafetyEvaluation {
         let depth_u16 = (depth_beyond_usd.min(65535.0)) as u16;
         
         if depth_beyond_usd < self.config.min_depth_beyond_usd {
@@ -199,18 +199,18 @@ impl RiskGuard {
             let state = self.tokens.entry(token_id.to_string()).or_default();
             state.tripped_until = Some(Instant::now() + self.config.trip_duration);
             
-            Evaluation {
-                decision: Decision::Block,
-                reason: Reason::Trap {
+            SafetyEvaluation {
+                decision: SafetyDecision::Block,
+                reason: SafetyReason::Trap {
                     seq: consecutive,
                     depth_usd: depth_u16,
                 },
                 consecutive_large: consecutive,
             }
         } else {
-            Evaluation {
-                decision: Decision::Allow,
-                reason: Reason::DepthOk {
+            SafetyEvaluation {
+                decision: SafetyDecision::Allow,
+                reason: SafetyReason::DepthOk {
                     seq: consecutive,
                     depth_usd: depth_u16,
                 },
@@ -281,64 +281,64 @@ mod tests {
 
     #[test]
     fn test_single_large_allows() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        let eval = cb.check_fast("token1", 2000.0);
-        assert_eq!(eval.decision, Decision::Allow);
+        let mut guard = RiskGuard::new(RiskGuardConfig::default());
+        let eval = guard.check_fast("token1", 2000.0);
+        assert_eq!(eval.decision, SafetyDecision::Allow);
         assert_eq!(eval.consecutive_large, 1);
     }
 
     #[test]
     fn test_two_large_triggers_fetch() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        cb.check_fast("token1", 2000.0);  // First
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0);
-        let eval = cb.check_fast("token1", 2000.0);  // Second
-        assert_eq!(eval.decision, Decision::FetchBook);
+        let mut guard = RiskGuard::new(RiskGuardConfig::default());
+        guard.check_fast("token1", 2000.0);  // First
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0);
+        let eval = guard.check_fast("token1", 2000.0);  // Second
+        assert_eq!(eval.decision, SafetyDecision::FetchBook);
         assert_eq!(eval.consecutive_large, 5);
     }
 
     #[test]
     fn test_thin_book_blocks() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        let eval = cb.check_with_book("token1", 2, 50.0);  // $50 < $200 threshold
-        assert_eq!(eval.decision, Decision::Block);
+        let mut guard = RiskGuard::new(RiskGuardConfig::default());
+        let eval = guard.check_with_book("token1", 2, 50.0);  // $50 < $200 threshold
+        assert_eq!(eval.decision, SafetyDecision::Block);
     }
 
     #[test]
     fn test_good_depth_allows() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        let eval = cb.check_with_book("token1", 2, 500.0);  // $500 > $200 threshold
-        assert_eq!(eval.decision, Decision::Allow);
+        let mut guard = RiskGuard::new(RiskGuardConfig::default());
+        let eval = guard.check_with_book("token1", 2, 500.0);  // $500 > $200 threshold
+        assert_eq!(eval.decision, SafetyDecision::Allow);
     }
 
     #[test]
     fn test_tripped_token_stays_blocked() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig {
+        let mut guard = RiskGuard::new(RiskGuardConfig {
             trip_duration: Duration::from_secs(10),
             ..Default::default()
         });
         
         // Trip it
-        cb.check_with_book("token1", 2, 50.0);
+        guard.check_with_book("token1", 2, 50.0);
         
         // Should still be blocked
-        let eval = cb.check_fast("token1", 100.0);  // Even small trade
-        assert_eq!(eval.decision, Decision::Block);
+        let eval = guard.check_fast("token1", 100.0);  // Even small trade
+        assert_eq!(eval.decision, SafetyDecision::Block);
     }
 
     #[test]
     fn test_different_tokens_independent() {
-        let mut cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0);
-        cb.check_fast("token1", 2000.0); 
+        let mut guard = RiskGuard::new(RiskGuardConfig::default());
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0);
+        guard.check_fast("token1", 2000.0); 
         
-        let eval = cb.check_fast("token2", 2000.0);  // token2 first large
-        assert_eq!(eval.decision, Decision::Allow);
+        let eval = guard.check_fast("token2", 2000.0);  // token2 first large
+        assert_eq!(eval.decision, SafetyDecision::Allow);
         assert_eq!(eval.consecutive_large, 1);
     }
 
