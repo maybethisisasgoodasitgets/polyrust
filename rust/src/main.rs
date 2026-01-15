@@ -255,12 +255,17 @@ fn process_order(
         return format!("SKIPPED_PROBABILITY ({})", size_type);
     }
     
-    // Calculate proper expiration timestamp (now + expiry seconds)
-    let expiry_secs = get_gtd_expiry_secs(is_live.unwrap_or(false));
-    let expiry_timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() + expiry_secs;
+    // FAK orders need expiration "0", GTD orders need a future timestamp
+    let expiration = if order_action == "GTD" {
+        let expiry_secs = get_gtd_expiry_secs(is_live.unwrap_or(false));
+        let expiry_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + expiry_secs;
+        Some(expiry_timestamp.to_string())
+    } else {
+        Some("0".into())
+    };
 
     let args = OrderArgs {
         token_id: info.clob_token_id.to_string(),  
@@ -269,7 +274,7 @@ fn process_order(
         side: if side_is_buy { "BUY".into() } else { "SELL".into() },
         fee_rate_bps: None,
         nonce: Some(0),
-        expiration: Some(expiry_timestamp.to_string()),
+        expiration,
         taker: None,
         order_type: Some(order_action.to_string()),
     };
