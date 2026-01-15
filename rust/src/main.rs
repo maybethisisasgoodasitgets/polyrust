@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -255,6 +255,13 @@ fn process_order(
         return format!("SKIPPED_PROBABILITY ({})", size_type);
     }
     
+    // Calculate proper expiration timestamp (now + expiry seconds)
+    let expiry_secs = get_gtd_expiry_secs(is_live.unwrap_or(false));
+    let expiry_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + expiry_secs;
+
     let args = OrderArgs {
         token_id: info.clob_token_id.to_string(),  
         price: limit_price,
@@ -262,7 +269,7 @@ fn process_order(
         side: if side_is_buy { "BUY".into() } else { "SELL".into() },
         fee_rate_bps: None,
         nonce: Some(0),
-        expiration: Some("0".into()),
+        expiration: Some(expiry_timestamp.to_string()),
         taker: None,
         order_type: Some(order_action.to_string()),
     };
