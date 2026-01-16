@@ -343,29 +343,14 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
     let client = reqwest::Client::new();
     let mut markets = Vec::new();
     
-    // The live 15-min BTC markets use timestamp-based slugs like "btc-updown-15m-{unix_timestamp}"
-    // We need to calculate the current/next interval timestamp and fetch that specific event
-    
-    // Calculate current 15-minute interval timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    
-    // Round down to nearest 15-minute interval (900 seconds)
-    let current_interval = (now / 900) * 900;
-    let next_interval = current_interval + 900;
-    
-    // Try fetching specific event slugs for current and next intervals
-    let slugs = [
-        format!("btc-updown-15m-{}", current_interval),
-        format!("btc-updown-15m-{}", next_interval),
-        format!("bitcoin-up-or-down-{}", current_interval),
+    // Try known BTC price target events first
+    let known_slugs = [
+        "what-price-will-bitcoin-hit-in-january-2026",
+        "what-price-will-bitcoin-hit-in-february-2026",
+        "bitcoin-price-january-2026",
     ];
     
-    println!("   Looking for intervals: current={}, next={}", current_interval, next_interval);
-    
-    for slug in &slugs {
+    for slug in &known_slugs {
         let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
         println!("   Trying slug: {}", slug);
         
@@ -380,9 +365,10 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
         
         if let Ok(events) = resp.json::<Vec<serde_json::Value>>().await {
             if !events.is_empty() {
-                println!("   ✅ Found event for slug: {}", slug);
+                println!("   ✅ Found event: {}", slug);
                 for event in &events {
                     if let Some(event_markets) = event.get("markets").and_then(|m| m.as_array()) {
+                        println!("   Found {} markets in event", event_markets.len());
                         for market in event_markets {
                             if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
                                 if clob_tokens.len() >= 2 {
@@ -392,8 +378,16 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                                     if !yes_token.is_empty() && !no_token.is_empty() {
                                         let description = market.get("question")
                                             .and_then(|q| q.as_str())
-                                            .unwrap_or("BTC Up or Down")
+                                            .unwrap_or("BTC Price Target")
                                             .to_string();
+                                        
+                                        // Get current outcome price from outcomePrices if available
+                                        let yes_price = market.get("outcomePrices")
+                                            .and_then(|p| p.as_array())
+                                            .and_then(|a| a.get(0))
+                                            .and_then(|v| v.as_str())
+                                            .and_then(|s| s.parse::<f64>().ok())
+                                            .unwrap_or(0.50);
                                         
                                         markets.push(LiveCryptoMarket {
                                             condition_id: market.get("conditionId")
@@ -402,10 +396,10 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                                                 .to_string(),
                                             yes_token_id: yes_token,
                                             no_token_id: no_token,
-                                            yes_ask: 0.50,
-                                            no_ask: 0.50,
-                                            end_time: next_interval,
-                                            interval_minutes: 15,
+                                            yes_ask: yes_price,
+                                            no_ask: 1.0 - yes_price,
+                                            end_time: 0,
+                                            interval_minutes: 0,  // Not a time-based market
                                             description,
                                         });
                                     }
