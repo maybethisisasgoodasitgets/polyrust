@@ -412,16 +412,14 @@ async fn main() -> Result<()> {
             }
             
             _ = market_refresh_interval.tick() => {
-                // Refresh market prices
+                // Refresh market prices (but don't reset interval - that happens on actual market window changes)
                 if let Some(ref mut market) = active_market {
                     if let Err(e) = update_market_prices(market).await {
                         eprintln!("⚠️ Failed to refresh market prices: {}", e);
                     }
                     engine.set_market(market.clone());
                 }
-                
-                // Reset interval for new period
-                engine.reset_interval().await;
+                // Note: Don't reset interval here - we want to track price change over the full market window
             }
         }
     }
