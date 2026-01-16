@@ -107,7 +107,7 @@ impl TradingState {
     fn new() -> Self {
         Self {
             last_trade_time: None,
-            min_trade_interval: Duration::from_secs(5),  // Min 5 seconds between trades
+            min_trade_interval: Duration::from_secs(120),  // Min 2 minutes between trades
             trades_executed: 0,
             estimated_pnl: 0.0,
             open_positions: Vec::new(),
@@ -157,8 +157,8 @@ impl TradingState {
                 -crypto_change_pct * 2.0
             };
             
-            // Require minimum hold time of 10 seconds before checking exits
-            if hold_time < Duration::from_secs(10) {
+            // Require minimum hold time of 60 seconds before checking exits
+            if hold_time < Duration::from_secs(60) {
                 remaining.push(pos);
                 continue;
             }
