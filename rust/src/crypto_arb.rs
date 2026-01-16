@@ -771,6 +771,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                                     end_time: 0,
                                     interval_minutes: 15,
                                     description,
+                                    asset: CryptoAsset::BTC,  // Fallback assumes BTC
                                 });
                             }
                         }
