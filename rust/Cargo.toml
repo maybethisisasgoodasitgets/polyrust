@@ -63,5 +63,9 @@ path = "src/bin/mempool_monitor.rs"
 name = "trade_monitor"
 path = "src/bin/trade_monitor.rs"
 
+[[bin]]
+name = "crypto_arb_bot"
+path = "src/bin/crypto_arb_bot.rs"
+
 [features]
 profiling = []

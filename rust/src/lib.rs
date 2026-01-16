@@ -27,6 +27,7 @@ pub mod tennis_markets;
 pub mod soccer_markets;
 pub mod settings;
 pub mod models;
+pub mod crypto_arb;
 
 #[cfg(test)]
 mod resubmit_tests;
