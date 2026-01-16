@@ -93,7 +93,15 @@ struct OpenPosition {
     entry_price: f64,
     direction_up: bool,
     entry_time: Instant,
+    entry_btc_price: f64,
+    market_description: String,
+    interval_minutes: u32,
 }
+
+// Exit thresholds
+const TAKE_PROFIT_PCT: f64 = 15.0;   // Sell if price up 15% from entry
+const STOP_LOSS_PCT: f64 = -10.0;    // Sell if price down 10% from entry
+const MAX_HOLD_MULTIPLIER: f64 = 0.8; // Exit at 80% of interval time if no TP/SL hit
 
 impl TradingState {
     fn new() -> Self {
@@ -113,7 +121,7 @@ impl TradingState {
         }
     }
     
-    fn record_trade(&mut self, signal: &ArbSignal) {
+    fn record_trade(&mut self, signal: &ArbSignal, market_desc: &str, interval_minutes: u32) {
         self.last_trade_time = Some(Instant::now());
         self.trades_executed += 1;
         self.open_positions.push(OpenPosition {
@@ -122,7 +130,45 @@ impl TradingState {
             entry_price: signal.buy_price,
             direction_up: signal.bet_up,
             entry_time: Instant::now(),
+            entry_btc_price: signal.btc_price,
+            market_description: market_desc.to_string(),
+            interval_minutes,
         });
+    }
+    
+    /// Check positions for exit conditions and return positions to close
+    fn check_exits(&mut self, current_btc_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
+        let mut exits = Vec::new();
+        let mut remaining = Vec::new();
+        
+        for pos in self.open_positions.drain(..) {
+            let hold_time = pos.entry_time.elapsed();
+            let max_hold_time = Duration::from_secs((pos.interval_minutes as u64) * 60 * 8 / 10); // 80% of interval
+            
+            // Calculate current P&L based on BTC price movement
+            let btc_change_pct = ((current_btc_price - pos.entry_btc_price) / pos.entry_btc_price) * 100.0;
+            
+            // If we bet UP and BTC went up, we're winning (and vice versa)
+            let effective_pnl_pct = if pos.direction_up {
+                btc_change_pct * 5.0  // Rough estimate: 5x leverage on price move
+            } else {
+                -btc_change_pct * 5.0
+            };
+            
+            // Check exit conditions
+            if effective_pnl_pct >= TAKE_PROFIT_PCT {
+                exits.push((pos, "TAKE PROFIT ✅", effective_pnl_pct));
+            } else if effective_pnl_pct <= STOP_LOSS_PCT {
+                exits.push((pos, "STOP LOSS ❌", effective_pnl_pct));
+            } else if hold_time >= max_hold_time {
+                exits.push((pos, "TIME EXIT ⏰", effective_pnl_pct));
+            } else {
+                remaining.push(pos);
+            }
+        }
+        
+        self.open_positions = remaining;
+        exits
     }
 }
 
@@ -292,14 +338,21 @@ async fn main() -> Result<()> {
                             println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
                                 signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
                             println!("      Position Size: ${:.2}", signal.recommended_size_usd);
+                            println!("      Exit Strategy: TP +{}% | SL {}% | Time {}% of interval", 
+                                TAKE_PROFIT_PCT, STOP_LOSS_PCT, (MAX_HOLD_MULTIPLIER * 100.0) as i32);
                             println!("      ---");
-                            state.record_trade(&signal);
+                            let interval_mins = active_market.as_ref().map(|m| m.interval_minutes).unwrap_or(15);
+                            state.record_trade(&signal, market_desc, interval_mins);
                         } else if let (Some(client), Some(creds)) = (&client, &creds) {
                             // Execute real trade
+                            let market_desc = active_market.as_ref()
+                                .map(|m| m.description.as_str())
+                                .unwrap_or("Unknown");
+                            let interval_mins = active_market.as_ref().map(|m| m.interval_minutes).unwrap_or(15);
                             match execute_trade(client, creds, &signal).await {
                                 Ok(result) => {
                                     println!("   ✅ Trade executed: {}", result);
-                                    state.record_trade(&signal);
+                                    state.record_trade(&signal, market_desc, interval_mins);
                                 }
                                 Err(e) => {
                                     println!("   ❌ Trade failed: {}", e);
@@ -308,6 +361,31 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                
+                // Check for exit conditions on open positions
+                let current_btc = {
+                    let ps = price_state.read().await;
+                    ps.btc_price
+                };
+                
+                let exits = state.check_exits(current_btc);
+                for (pos, reason, pnl_pct) in exits {
+                    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+                    let hold_duration = pos.entry_time.elapsed();
+                    let pnl_usd = pos.size_usd * (pnl_pct / 100.0);
+                    
+                    println!("💰 [EXIT] {} - {}", reason, timestamp);
+                    println!("      Market: {}", pos.market_description);
+                    println!("      Direction: {}", if pos.direction_up { "YES (UP)" } else { "NO (DOWN)" });
+                    println!("      Entry: ${:.2} @ {:.2}¢ | BTC was ${:.2}", 
+                        pos.size_usd, pos.entry_price * 100.0, pos.entry_btc_price);
+                    println!("      Exit: BTC now ${:.2} | Hold time: {:.1}s", 
+                        current_btc, hold_duration.as_secs_f64());
+                    println!("      P&L: {:+.1}% (${:+.2})", pnl_pct, pnl_usd);
+                    println!("      ---");
+                    
+                    state.estimated_pnl += pnl_usd;
+                }
             }
             
             _ = price_log_interval.tick() => {
@@ -315,12 +393,20 @@ async fn main() -> Result<()> {
                 let ps = price_state.read().await;
                 let change = ps.price_change_pct();
                 let direction = if change >= 0.0 { "⬆️" } else { "⬇️" };
+                let open_pos = state.open_positions.len();
+                let pnl_str = if state.estimated_pnl != 0.0 {
+                    format!(" | P&L: ${:+.2}", state.estimated_pnl)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "📈 BTC ${:.2} | {} {:+.3}% from interval start | Trades: {} | {}",
+                    "📈 BTC ${:.2} | {} {:+.3}% | Trades: {} | Open: {}{} | {}",
                     ps.btc_price,
                     direction,
                     change,
                     state.trades_executed,
+                    open_pos,
+                    pnl_str,
                     if cfg.mock_trading { "MOCK" } else { "LIVE" }
                 );
             }
