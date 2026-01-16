@@ -343,76 +343,108 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
     let client = reqwest::Client::new();
     let mut markets = Vec::new();
     
-    // Try known BTC price target events first
-    let known_slugs = [
-        "what-price-will-bitcoin-hit-in-january-2026",
-        "what-price-will-bitcoin-hit-in-february-2026",
-        "bitcoin-price-january-2026",
-    ];
+    // ChatGPT approach: Paginate through /markets and filter by slug starting with "btc-updown-15m-"
+    println!("   Paginating through Gamma /markets endpoint...");
     
-    for slug in &known_slugs {
-        let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
-        println!("   Trying slug: {}", slug);
+    for page in 0..10 {
+        let limit = 100;
+        let offset = page * limit;
+        
+        let url = format!(
+            "https://gamma-api.polymarket.com/markets?active=true&closed=false&order=id&ascending=false&limit={}&offset={}",
+            limit, offset
+        );
         
         let resp = match client.get(&url)
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .send()
             .await 
         {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                println!("   ⚠️ Page {} request failed: {}", page, e);
+                break;
+            }
         };
         
-        if let Ok(events) = resp.json::<Vec<serde_json::Value>>().await {
-            if !events.is_empty() {
-                println!("   ✅ Found event: {}", slug);
-                for event in &events {
-                    if let Some(event_markets) = event.get("markets").and_then(|m| m.as_array()) {
-                        println!("   Found {} markets in event", event_markets.len());
-                        for market in event_markets {
-                            if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
-                                if clob_tokens.len() >= 2 {
-                                    let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
-                                    let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
-                                    
-                                    if !yes_token.is_empty() && !no_token.is_empty() {
-                                        let description = market.get("question")
-                                            .and_then(|q| q.as_str())
-                                            .unwrap_or("BTC Price Target")
-                                            .to_string();
-                                        
-                                        // Get current outcome price from outcomePrices if available
-                                        let yes_price = market.get("outcomePrices")
-                                            .and_then(|p| p.as_array())
-                                            .and_then(|a| a.get(0))
-                                            .and_then(|v| v.as_str())
-                                            .and_then(|s| s.parse::<f64>().ok())
-                                            .unwrap_or(0.50);
-                                        
-                                        markets.push(LiveCryptoMarket {
-                                            condition_id: market.get("conditionId")
-                                                .and_then(|c| c.as_str())
-                                                .unwrap_or("")
-                                                .to_string(),
-                                            yes_token_id: yes_token,
-                                            no_token_id: no_token,
-                                            yes_ask: yes_price,
-                                            no_ask: 1.0 - yes_price,
-                                            end_time: 0,
-                                            interval_minutes: 0,  // Not a time-based market
-                                            description,
-                                        });
-                                    }
-                                }
-                            }
+        let gamma_markets: Vec<serde_json::Value> = match resp.json().await {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+        
+        if gamma_markets.is_empty() {
+            println!("   No more markets at page {}", page);
+            break;
+        }
+        
+        println!("   Page {}: {} markets", page, gamma_markets.len());
+        
+        // Filter for btc-updown-15m markets
+        for market in &gamma_markets {
+            let slug = market.get("slug")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            
+            // Check for BTC 15-minute up/down markets
+            if slug.starts_with("btc-updown-15m-") || slug.contains("bitcoin-up-or-down") {
+                println!("   ✅ Found BTC 15m market: {}", slug);
+                
+                if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
+                    if clob_tokens.len() >= 2 {
+                        let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
+                        let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
+                        
+                        if !yes_token.is_empty() && !no_token.is_empty() {
+                            let description = market.get("question")
+                                .and_then(|q| q.as_str())
+                                .unwrap_or("BTC Up or Down")
+                                .to_string();
+                            
+                            // Get current outcome price
+                            let yes_price = market.get("outcomePrices")
+                                .and_then(|p| p.as_array())
+                                .and_then(|a| a.get(0))
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(0.50);
+                            
+                            markets.push(LiveCryptoMarket {
+                                condition_id: market.get("conditionId")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                yes_token_id: yes_token,
+                                no_token_id: no_token,
+                                yes_ask: yes_price,
+                                no_ask: 1.0 - yes_price,
+                                end_time: 0,
+                                interval_minutes: 15,
+                                description,
+                            });
                         }
                     }
                 }
             }
         }
         
+        // If we found some markets, we can stop paginating
         if !markets.is_empty() {
+            println!("   Found {} BTC 15m markets, stopping pagination", markets.len());
             break;
+        }
+    }
+    
+    // Debug: if no markets found, show some sample slugs from the API
+    if markets.is_empty() {
+        println!("   No btc-updown-15m markets found. Checking what slugs exist...");
+        let url = "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20";
+        if let Ok(resp) = client.get(url).timeout(Duration::from_secs(5)).send().await {
+            if let Ok(sample_markets) = resp.json::<Vec<serde_json::Value>>().await {
+                for (i, m) in sample_markets.iter().take(10).enumerate() {
+                    let slug = m.get("slug").and_then(|s| s.as_str()).unwrap_or("(no slug)");
+                    println!("   [{}] {}", i, slug);
+                }
+            }
         }
     }
     
