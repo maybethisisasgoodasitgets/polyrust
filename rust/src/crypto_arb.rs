@@ -216,8 +216,18 @@ impl CryptoArbEngine {
         let change_pct = state.price_change_pct();
         let abs_change = change_pct.abs();
         
-        // Need minimum price movement
-        if abs_change < MIN_PRICE_MOVE_PCT {
+        // Market-type-specific minimum price move thresholds
+        // Shorter timeframes need smaller moves, longer need bigger
+        let min_move = match market.interval_minutes {
+            5 => 0.05,      // 5-minute: 0.05% move
+            15 => 0.10,     // 15-minute: 0.10% move  
+            60 => 0.20,     // 1-hour/daily: 0.20% move
+            240 => 0.30,    // 4-hour: 0.30% move
+            _ => 0.15,      // Default: 0.15% move
+        };
+        
+        // Need minimum price movement for this market type
+        if abs_change < min_move {
             return None;
         }
         
@@ -234,17 +244,40 @@ impl CryptoArbEngine {
         }
         
         // Calculate edge: if price moved X%, true probability is higher than market implies
-        // Simple model: larger move = higher confidence
-        let implied_prob = 0.50 + (abs_change * 5.0).min(45.0) / 100.0;  // Cap at 95%
+        // Multiplier varies by market type - shorter timeframes = stronger signal per % move
+        let prob_multiplier = match market.interval_minutes {
+            5 => 8.0,       // 5-minute: 0.05% move → 0.4% prob increase
+            15 => 5.0,      // 15-minute: 0.10% move → 0.5% prob increase
+            60 => 3.0,      // 1-hour: 0.20% move → 0.6% prob increase
+            240 => 2.0,     // 4-hour: 0.30% move → 0.6% prob increase
+            _ => 4.0,       // Default
+        };
+        let implied_prob = 0.50 + (abs_change * prob_multiplier).min(45.0) / 100.0;  // Cap at 95%
         let market_prob = market_ask;
         let edge_pct = (implied_prob - market_prob) * 100.0;
         
-        if edge_pct < MIN_EDGE_PCT {
+        // Minimum edge also varies by market type
+        let min_edge = match market.interval_minutes {
+            5 => 1.5,       // 5-minute: lower edge OK (faster resolution)
+            15 => 2.0,      // 15-minute: standard
+            60 => 2.5,      // 1-hour: need more edge
+            240 => 3.0,     // 4-hour: need even more edge
+            _ => 2.0,
+        };
+        
+        if edge_pct < min_edge {
             return None;
         }
         
-        // Calculate confidence (0-100)
-        let confidence = ((abs_change * 20.0).min(100.0)) as u8;
+        // Calculate confidence (0-100) - scaled by market type
+        let confidence_multiplier = match market.interval_minutes {
+            5 => 30.0,      // 5-minute: small moves = high confidence
+            15 => 20.0,     // 15-minute: standard
+            60 => 15.0,     // 1-hour: need bigger moves
+            240 => 10.0,    // 4-hour: need even bigger moves
+            _ => 20.0,
+        };
+        let confidence = ((abs_change * confidence_multiplier).min(100.0)) as u8;
         
         // Calculate recommended size based on edge (Kelly-lite)
         let kelly_fraction = (edge_pct / 100.0) / (1.0 - market_ask);
