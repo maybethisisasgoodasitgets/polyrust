@@ -228,8 +228,13 @@ impl CryptoArbEngine {
             (false, market.no_token_id.clone(), market.no_ask)
         };
         
+        // Log why we might skip
+        println!("   🔍 Checking: move={:.3}%, dir={}, ask={:.2}¢", 
+            change_pct, if bet_up { "UP" } else { "DOWN" }, market_ask * 100.0);
+        
         // Check if market price is attractive enough
         if market_ask > MAX_BUY_PRICE {
+            println!("   ⏭️ Skip: price {:.2}¢ > max {:.2}¢", market_ask * 100.0, MAX_BUY_PRICE * 100.0);
             return None;
         }
         
@@ -387,6 +392,18 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
             
             // Check for BTC 15-minute up/down markets
             if slug.starts_with("btc-updown-15m-") || slug.contains("bitcoin-up-or-down") {
+                // Check if market is active (not closed)
+                let is_closed = market.get("closed")
+                    .and_then(|c| c.as_bool())
+                    .unwrap_or(false);
+                let is_active = market.get("active")
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(true);
+                
+                if is_closed || !is_active {
+                    continue;
+                }
+                
                 println!("   ✅ Found BTC 15m market: {}", slug);
                 
                 // Debug: check what fields exist
