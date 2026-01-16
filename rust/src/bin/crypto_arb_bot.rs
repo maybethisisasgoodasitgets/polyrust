@@ -137,7 +137,7 @@ impl TradingState {
     }
     
     /// Check positions for exit conditions and return positions to close
-    fn check_exits(&mut self, current_btc_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
+    fn check_exits(&mut self, current_crypto_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
         let mut exits = Vec::new();
         let mut remaining = Vec::new();
         
@@ -145,15 +145,23 @@ impl TradingState {
             let hold_time = pos.entry_time.elapsed();
             let max_hold_time = Duration::from_secs((pos.interval_minutes as u64) * 60 * 8 / 10); // 80% of interval
             
-            // Calculate current P&L based on BTC price movement
-            let btc_change_pct = ((current_btc_price - pos.entry_btc_price) / pos.entry_btc_price) * 100.0;
+            // Calculate current P&L based on crypto price movement since entry
+            let crypto_change_pct = ((current_crypto_price - pos.entry_btc_price) / pos.entry_btc_price) * 100.0;
             
-            // If we bet UP and BTC went up, we're winning (and vice versa)
+            // If we bet UP and crypto went up, we're winning (and vice versa)
+            // Use a more realistic multiplier based on how binary options work
+            // At 50¢, a correct prediction roughly doubles your money
             let effective_pnl_pct = if pos.direction_up {
-                btc_change_pct * 5.0  // Rough estimate: 5x leverage on price move
+                crypto_change_pct * 2.0  // More conservative multiplier
             } else {
-                -btc_change_pct * 5.0
+                -crypto_change_pct * 2.0
             };
+            
+            // Require minimum hold time of 10 seconds before checking exits
+            if hold_time < Duration::from_secs(10) {
+                remaining.push(pos);
+                continue;
+            }
             
             // Check exit conditions
             if effective_pnl_pct >= TAKE_PROFIT_PCT {
@@ -373,12 +381,16 @@ async fn main() -> Result<()> {
                 }
                 
                 // Check for exit conditions on open positions
-                let current_btc = {
+                // Use the asset-specific price for the active market
+                let current_crypto = {
                     let ps = price_state.read().await;
-                    ps.btc_price
+                    match active_market.as_ref().map(|m| m.asset) {
+                        Some(CryptoAsset::ETH) => ps.eth_price,
+                        _ => ps.btc_price,
+                    }
                 };
                 
-                let exits = state.check_exits(current_btc);
+                let exits = state.check_exits(current_crypto);
                 for (pos, reason, pnl_pct) in exits {
                     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
                     let hold_duration = pos.entry_time.elapsed();
@@ -387,10 +399,10 @@ async fn main() -> Result<()> {
                     println!("💰 [EXIT] {} - {}", reason, timestamp);
                     println!("      Market: {}", pos.market_description);
                     println!("      Direction: {}", if pos.direction_up { "YES (UP)" } else { "NO (DOWN)" });
-                    println!("      Entry: ${:.2} @ {:.2}¢ | BTC was ${:.2}", 
+                    println!("      Entry: ${:.2} @ {:.2}¢ | Crypto was ${:.2}", 
                         pos.size_usd, pos.entry_price * 100.0, pos.entry_btc_price);
-                    println!("      Exit: BTC now ${:.2} | Hold time: {:.1}s", 
-                        current_btc, hold_duration.as_secs_f64());
+                    println!("      Exit: Crypto now ${:.2} | Hold time: {:.1}s", 
+                        current_crypto, hold_duration.as_secs_f64());
                     println!("      P&L: {:+.1}% (${:+.2})", pnl_pct, pnl_usd);
                     println!("      ---");
                     

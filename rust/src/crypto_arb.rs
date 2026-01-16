@@ -279,12 +279,6 @@ impl CryptoArbEngine {
             return None;
         }
         
-        // Debug: log when we pass the price move threshold
-        let asset_name = match asset {
-            CryptoAsset::BTC => "BTC",
-            CryptoAsset::ETH => "ETH",
-        };
-        println!("   🔍 {} move {:.3}% (threshold {:.2}%) - checking edge...", asset_name, change_pct, min_move);
         
         // Determine direction and get relevant market prices
         let (bet_up, token_id, market_ask) = if state.is_up(asset) {
@@ -322,7 +316,6 @@ impl CryptoArbEngine {
         };
         
         if edge_pct < min_edge {
-            println!("   ⏭️ Edge {:.2}% < min {:.1}% (market @ {:.0}¢)", edge_pct, min_edge, market_ask * 100.0);
             return None;
         }
         
