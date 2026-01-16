@@ -130,7 +130,7 @@ impl TradingState {
             entry_price: signal.buy_price,
             direction_up: signal.bet_up,
             entry_time: Instant::now(),
-            entry_btc_price: signal.btc_price,
+            entry_btc_price: signal.crypto_price,
             market_description: market_desc.to_string(),
             interval_minutes,
         });
