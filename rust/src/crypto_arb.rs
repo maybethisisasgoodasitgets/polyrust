@@ -312,12 +312,13 @@ impl CryptoArbEngine {
         let edge_pct = (implied_prob - market_prob) * 100.0;
         
         // Minimum edge also varies by market type
+        // Lowered thresholds since 50¢ markets have inherently low edge
         let min_edge = match market.interval_minutes {
-            5 => 1.5,       // 5-minute: lower edge OK (faster resolution)
-            15 => 2.0,      // 15-minute: standard
-            60 => 2.5,      // 1-hour: need more edge
-            240 => 3.0,     // 4-hour: need even more edge
-            _ => 2.0,
+            5 => 0.3,       // 5-minute: very low edge OK (fast resolution, small moves)
+            15 => 0.5,      // 15-minute: low edge
+            60 => 1.0,      // 1-hour: moderate edge
+            240 => 1.5,     // 4-hour: need more edge
+            _ => 0.5,
         };
         
         if edge_pct < min_edge {
