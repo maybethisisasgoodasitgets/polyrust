@@ -9,7 +9,7 @@ use futures::{SinkExt, StreamExt};
 use memchr::memmem;
 use once_cell::sync::Lazy;
 use rand::Rng;
-use rust_clob_client::{ApiCreds, OrderArgs, RustClobClient, PreparedCreds, OrderResponse};
+use pm_whale_follower::{ApiCreds, OrderArgs, RustClobClient, PreparedCreds, OrderResponse};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,12 +22,13 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-use rust_clob_client::config::*;
-use rust_clob_client::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Decision, Side, calculate_depth_beyond};
-use rust_clob_client::types::{OrderInfo, SizeType, ResubmitRequest};
-use rust_clob_client::atp_markets;
-use rust_clob_client::ligue1_markets;
-use rust_clob_client::cache_manager;
+use pm_whale_follower::config::*;
+use pm_whale_follower::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Decision, Side, calculate_depth_beyond};
+use pm_whale_follower::types::{OrderInfo, SizeType, ResubmitRequest};
+use pm_whale_follower::atp_markets;
+use pm_whale_follower::ligue1_markets;
+use pm_whale_follower::cache_manager;
+use pm_whale_follower::settings::*;
 
 // ============================================================================
 // Mempool-specific constants (not in shared config)
@@ -1166,7 +1167,7 @@ fn submit_resubmit_order_sync(
     is_last_attempt: bool,
 ) -> anyhow::Result<(bool, String, f64)> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    use rust_clob_client::config::get_gtd_expiry_secs;
+    use pm_whale_follower::config::get_gtd_expiry_secs;
 
     let mut client = client.clone();
 
