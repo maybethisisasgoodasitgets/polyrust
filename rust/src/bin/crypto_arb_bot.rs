@@ -215,18 +215,36 @@ async fn main() -> Result<()> {
         }
     }
     
-    // Use first market if available
-    let mut active_market: Option<LiveCryptoMarket> = markets.into_iter().next();
+    // Find the market with the best (lowest) price - closer to 50¢ is better
+    let mut active_market: Option<LiveCryptoMarket> = None;
+    let mut best_price_distance = f64::MAX;
     
-    if let Some(ref mut market) = active_market {
-        // Update market prices
-        if let Err(e) = update_market_prices(market).await {
-            println!("⚠️ Failed to get market prices: {}", e);
-        } else {
-            println!("📊 Market prices - Yes: {:.2}¢, No: {:.2}¢", 
-                market.yes_ask * 100.0, market.no_ask * 100.0);
+    for mut market in markets {
+        // Update market prices from CLOB
+        if let Err(e) = update_market_prices(&mut market).await {
+            println!("⚠️ Failed to get prices for {}: {}", market.description, e);
+            continue;
         }
+        
+        // Calculate how close to 50¢ (ideal for arbitrage)
+        let min_price = market.yes_ask.min(market.no_ask);
+        let distance_from_50 = (min_price - 0.50).abs();
+        
+        println!("   {} - Yes: {:.2}¢, No: {:.2}¢ (distance from 50¢: {:.2})", 
+            market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
+        
+        if distance_from_50 < best_price_distance && min_price <= 0.92 {
+            best_price_distance = distance_from_50;
+            active_market = Some(market);
+        }
+    }
+    
+    if let Some(ref market) = active_market {
+        println!("📊 Selected market: {} - Yes: {:.2}¢, No: {:.2}¢", 
+            market.description, market.yes_ask * 100.0, market.no_ask * 100.0);
         engine.set_market(market.clone());
+    } else {
+        println!("⚠️ No markets with prices ≤92¢ found - all markets already heavily traded");
     }
     
     // Trading state
@@ -240,7 +258,7 @@ async fn main() -> Result<()> {
     
     let mut check_interval = interval(Duration::from_millis(100));
     let mut price_log_interval = interval(Duration::from_secs(10));
-    let mut market_refresh_interval = interval(Duration::from_secs(60));
+    let mut market_refresh_interval = interval(Duration::from_secs(5));  // Refresh prices every 5 seconds
     
     loop {
         tokio::select! {

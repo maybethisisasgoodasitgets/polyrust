@@ -228,13 +228,8 @@ impl CryptoArbEngine {
             (false, market.no_token_id.clone(), market.no_ask)
         };
         
-        // Log why we might skip
-        println!("   🔍 Checking: move={:.3}%, dir={}, ask={:.2}¢", 
-            change_pct, if bet_up { "UP" } else { "DOWN" }, market_ask * 100.0);
-        
-        // Check if market price is attractive enough
+        // Check if market price is attractive enough (silent skip if too expensive)
         if market_ask > MAX_BUY_PRICE {
-            println!("   ⏭️ Skip: price {:.2}¢ > max {:.2}¢", market_ask * 100.0, MAX_BUY_PRICE * 100.0);
             return None;
         }
         
