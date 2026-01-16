@@ -14,6 +14,7 @@
 ///   MIN_POSITION_USD - Minimum position size per trade (default: 1.0)
 
 use anyhow::{Result, anyhow};
+use chrono;
 use dotenvy::dotenv;
 use pm_whale_follower::crypto_arb::{
     CryptoArbEngine, spawn_binance_feed, fetch_live_crypto_markets, 
@@ -269,7 +270,29 @@ async fn main() -> Result<()> {
                         println!("🎰 SIGNAL: {}", signal);
                         
                         if cfg.mock_trading {
-                            println!("   📝 [MOCK] Would execute trade");
+                            // Log detailed mock trade for analysis
+                            let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+                            let market_desc = active_market.as_ref()
+                                .map(|m| m.description.as_str())
+                                .unwrap_or("Unknown");
+                            let market_type = active_market.as_ref()
+                                .map(|m| match m.interval_minutes {
+                                    5 => "5m",
+                                    15 => "15m", 
+                                    60 => "1h",
+                                    240 => "4h",
+                                    _ => "daily"
+                                })
+                                .unwrap_or("?");
+                            
+                            println!("   📝 [MOCK TRADE] {}", timestamp);
+                            println!("      Market: {} ({})", market_desc, market_type);
+                            println!("      Direction: {}", if signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
+                            println!("      BTC Price: ${:.2} ({:+.3}% move)", signal.btc_price, signal.price_change_pct);
+                            println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
+                                signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
+                            println!("      Position Size: ${:.2}", signal.recommended_size_usd);
+                            println!("      ---");
                             state.record_trade(&signal);
                         } else if let (Some(client), Some(creds)) = (&client, &creds) {
                             // Execute real trade
