@@ -387,6 +387,16 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
         
         println!("   Found {} events/markets", events.len());
         
+        // Debug: print first few titles to see what we're getting
+        for (i, event) in events.iter().take(5).enumerate() {
+            let title = event.get("title")
+                .or_else(|| event.get("question"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("(no title)");
+            let slug = event.get("slug").and_then(|s| s.as_str()).unwrap_or("(no slug)");
+            println!("   [{}] {} | slug: {}", i, &title[..title.len().min(60)], slug);
+        }
+        
         for event in &events {
             // Check both event-level and market-level data
             let title = event.get("title")
