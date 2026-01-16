@@ -399,50 +399,65 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                     continue;
                 }
                 
-                if let Some(clob_tokens) = clob_tokens_raw.and_then(|t| t.as_array()) {
-                    println!("      clobTokenIds count: {}", clob_tokens.len());
+                // clobTokenIds can be either an array or a JSON string containing an array
+                let clob_tokens: Vec<String> = if let Some(arr) = clob_tokens_raw.and_then(|t| t.as_array()) {
+                    // It's already an array
+                    arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                } else if let Some(s) = clob_tokens_raw.and_then(|t| t.as_str()) {
+                    // It's a JSON string - parse it
+                    serde_json::from_str::<Vec<String>>(s).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                
+                println!("      clobTokenIds count: {}", clob_tokens.len());
+                
+                if clob_tokens.len() >= 2 {
+                    let yes_token = clob_tokens[0].clone();
+                    let no_token = clob_tokens[1].clone();
                     
-                    if clob_tokens.len() >= 2 {
-                        let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
-                        let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
+                    println!("      yes_token: {}..., no_token: {}...", 
+                        &yes_token[..yes_token.len().min(20)],
+                        &no_token[..no_token.len().min(20)]);
+                    
+                    if !yes_token.is_empty() && !no_token.is_empty() {
+                        let description = market.get("question")
+                            .and_then(|q| q.as_str())
+                            .unwrap_or("BTC Up or Down")
+                            .to_string();
                         
-                        println!("      yes_token: {}..., no_token: {}...", 
-                            &yes_token[..yes_token.len().min(20)],
-                            &no_token[..no_token.len().min(20)]);
-                        
-                        if !yes_token.is_empty() && !no_token.is_empty() {
-                            let description = market.get("question")
-                                .and_then(|q| q.as_str())
-                                .unwrap_or("BTC Up or Down")
-                                .to_string();
-                            
-                            // Get current outcome price
-                            let yes_price = market.get("outcomePrices")
+                        // Get current outcome price - also might be a JSON string
+                        let yes_price = if let Some(prices_str) = market.get("outcomePrices").and_then(|p| p.as_str()) {
+                            serde_json::from_str::<Vec<String>>(prices_str)
+                                .ok()
+                                .and_then(|v| v.get(0).cloned())
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .unwrap_or(0.50)
+                        } else {
+                            market.get("outcomePrices")
                                 .and_then(|p| p.as_array())
                                 .and_then(|a| a.get(0))
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<f64>().ok())
-                                .unwrap_or(0.50);
-                            
-                            println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
-                            
-                            markets.push(LiveCryptoMarket {
-                                condition_id: market.get("conditionId")
-                                    .and_then(|c| c.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                yes_token_id: yes_token,
-                                no_token_id: no_token,
-                                yes_ask: yes_price,
-                                no_ask: 1.0 - yes_price,
-                                end_time: 0,
-                                interval_minutes: 15,
-                                description,
-                            });
-                        }
+                                .unwrap_or(0.50)
+                        };
+                        
+                        println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
+                        
+                        markets.push(LiveCryptoMarket {
+                            condition_id: market.get("conditionId")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            yes_token_id: yes_token,
+                            no_token_id: no_token,
+                            yes_ask: yes_price,
+                            no_ask: 1.0 - yes_price,
+                            end_time: 0,
+                            interval_minutes: 15,
+                            description,
+                        });
                     }
-                } else {
-                    println!("      ⚠️ clobTokenIds not an array: {:?}", clob_tokens_raw);
                 }
             }
         }
