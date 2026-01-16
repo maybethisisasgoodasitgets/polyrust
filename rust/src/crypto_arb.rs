@@ -343,16 +343,92 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
     let client = reqwest::Client::new();
     let mut markets = Vec::new();
     
-    // Try multiple API endpoints to find live crypto markets
-    // The live 15-min BTC markets use a specific slug pattern like "btc-updown-15m-{timestamp}"
-    let urls = [
-        // Try fetching by event slug directly (the URL pattern from polymarket.com/event/btc-updown-15m-*)
-        "https://gamma-api.polymarket.com/events?slug=btc-updown-15m&limit=50",
-        // Try the CLOB API directly for live markets
-        "https://clob.polymarket.com/markets?next_cursor=MA==",
-        // Try strapi endpoint that might have live markets
-        "https://strapi-matic.poly.market/markets?active=true&_limit=200",
+    // The live 15-min BTC markets use timestamp-based slugs like "btc-updown-15m-{unix_timestamp}"
+    // We need to calculate the current/next interval timestamp and fetch that specific event
+    
+    // Calculate current 15-minute interval timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    // Round down to nearest 15-minute interval (900 seconds)
+    let current_interval = (now / 900) * 900;
+    let next_interval = current_interval + 900;
+    
+    // Try fetching specific event slugs for current and next intervals
+    let slugs = [
+        format!("btc-updown-15m-{}", current_interval),
+        format!("btc-updown-15m-{}", next_interval),
+        format!("bitcoin-up-or-down-{}", current_interval),
     ];
+    
+    println!("   Looking for intervals: current={}, next={}", current_interval, next_interval);
+    
+    for slug in &slugs {
+        let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
+        println!("   Trying slug: {}", slug);
+        
+        let resp = match client.get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await 
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        
+        if let Ok(events) = resp.json::<Vec<serde_json::Value>>().await {
+            if !events.is_empty() {
+                println!("   ✅ Found event for slug: {}", slug);
+                for event in &events {
+                    if let Some(event_markets) = event.get("markets").and_then(|m| m.as_array()) {
+                        for market in event_markets {
+                            if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
+                                if clob_tokens.len() >= 2 {
+                                    let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
+                                    let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
+                                    
+                                    if !yes_token.is_empty() && !no_token.is_empty() {
+                                        let description = market.get("question")
+                                            .and_then(|q| q.as_str())
+                                            .unwrap_or("BTC Up or Down")
+                                            .to_string();
+                                        
+                                        markets.push(LiveCryptoMarket {
+                                            condition_id: market.get("conditionId")
+                                                .and_then(|c| c.as_str())
+                                                .unwrap_or("")
+                                                .to_string(),
+                                            yes_token_id: yes_token,
+                                            no_token_id: no_token,
+                                            yes_ask: 0.50,
+                                            no_ask: 0.50,
+                                            end_time: next_interval,
+                                            interval_minutes: 15,
+                                            description,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !markets.is_empty() {
+            break;
+        }
+    }
+    
+    // Fallback: try searching all active events for crypto tag
+    if markets.is_empty() {
+        println!("   Fallback: searching all crypto-tagged events...");
+        let urls = [
+            "https://gamma-api.polymarket.com/events?active=true&closed=false&tag=crypto&limit=100",
+            "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200",
+        ];
     
     for url in urls {
         println!("   Trying: {}", url.split('?').next().unwrap_or(url));
@@ -464,6 +540,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
             break;
         }
     }
+    }  // end of fallback if block
     
     Ok(markets)
 }
