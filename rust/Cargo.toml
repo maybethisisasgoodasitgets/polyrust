@@ -55,9 +55,9 @@ path = "src/bin/test_order_types.rs"
 name = "validate_setup"
 path = "src/bin/validate_setup.rs"
 
-[[bin]]
-name = "mempool_monitor"
-path = "src/bin/mempool_monitor.rs"
+# [[bin]]
+# name = "mempool_monitor"
+# path = "src/bin/mempool_monitor.rs"
 
 [[bin]]
 name = "trade_monitor"
