@@ -340,63 +340,117 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>) -> Result<()> {
 
 /// Fetch current live crypto markets from Polymarket
 pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
-    // Polymarket's live crypto markets follow a pattern
-    // We need to query their API for active "BTC up or down" markets
-    
     let client = reqwest::Client::new();
-    
-    // Query Gamma API for live crypto events
-    let url = "https://gamma-api.polymarket.com/events?active=true&tag=crypto&limit=50";
-    
-    let resp = client.get(url)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await?;
-    
-    let events: Vec<serde_json::Value> = resp.json().await?;
-    
     let mut markets = Vec::new();
     
-    for event in events {
-        // Look for live BTC price markets
-        let title = event.get("title")
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
+    // Try multiple API endpoints to find live crypto markets
+    let urls = [
+        // Live crypto markets endpoint (15-minute intervals)
+        "https://gamma-api.polymarket.com/events?active=true&closed=false&tag=crypto&limit=100",
+        // Search by slug pattern for BTC up/down markets
+        "https://gamma-api.polymarket.com/events?active=true&closed=false&slug_contains=btc-updown&limit=50",
+        // Try markets endpoint directly
+        "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100",
+    ];
+    
+    for url in urls {
+        println!("   Trying: {}", url.split('?').next().unwrap_or(url));
         
-        if title.to_lowercase().contains("bitcoin") || title.to_lowercase().contains("btc") {
-            if let Some(event_markets) = event.get("markets").and_then(|m| m.as_array()) {
-                for market in event_markets {
-                    // Extract market details
-                    if let (Some(condition_id), Some(yes_token), Some(no_token)) = (
-                        market.get("conditionId").and_then(|c| c.as_str()),
-                        market.get("clobTokenIds").and_then(|t| t.as_array()).and_then(|a| a.get(0)).and_then(|t| t.as_str()),
-                        market.get("clobTokenIds").and_then(|t| t.as_array()).and_then(|a| a.get(1)).and_then(|t| t.as_str()),
-                    ) {
-                        let description = market.get("question")
-                            .and_then(|q| q.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        
-                        // Check if this is a live/active market
-                        let active = market.get("active")
-                            .and_then(|a| a.as_bool())
-                            .unwrap_or(false);
-                        
-                        if active && (description.to_lowercase().contains("up") || description.to_lowercase().contains("down")) {
-                            markets.push(LiveCryptoMarket {
-                                condition_id: condition_id.to_string(),
-                                yes_token_id: yes_token.to_string(),
-                                no_token_id: no_token.to_string(),
-                                yes_ask: 0.50,  // Will be updated from order book
-                                no_ask: 0.50,
-                                end_time: 0,
-                                interval_minutes: 5,  // Default assumption
-                                description,
-                            });
+        let resp = match client.get(url)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await 
+        {
+            Ok(r) => r,
+            Err(e) => {
+                println!("   ⚠️ Request failed: {}", e);
+                continue;
+            }
+        };
+        
+        let text = resp.text().await.unwrap_or_default();
+        let events: Vec<serde_json::Value> = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => {
+                // Maybe it's a single object, try parsing as object
+                if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(arr) = obj.get("data").and_then(|d| d.as_array()) {
+                        arr.clone()
+                    } else {
+                        vec![obj]
+                    }
+                } else {
+                    continue;
+                }
+            }
+        };
+        
+        println!("   Found {} events/markets", events.len());
+        
+        for event in &events {
+            // Check both event-level and market-level data
+            let title = event.get("title")
+                .or_else(|| event.get("question"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+            
+            let slug = event.get("slug")
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            
+            // Look for BTC up/down markets
+            let is_btc_updown = title.to_lowercase().contains("bitcoin up or down")
+                || title.to_lowercase().contains("btc up or down")
+                || slug.contains("btc-updown")
+                || slug.contains("bitcoin-up-or-down");
+            
+            if is_btc_updown {
+                println!("   ✅ Found BTC market: {}", title);
+                
+                // Try to get market data from nested markets array or direct fields
+                let market_list: Vec<&serde_json::Value> = if let Some(arr) = event.get("markets").and_then(|m| m.as_array()) {
+                    arr.iter().collect()
+                } else {
+                    vec![event]
+                };
+                
+                for market in market_list {
+                    if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
+                        if clob_tokens.len() >= 2 {
+                            let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
+                            let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
+                            
+                            if !yes_token.is_empty() && !no_token.is_empty() {
+                                let condition_id = market.get("conditionId")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                
+                                let description = market.get("question")
+                                    .and_then(|q| q.as_str())
+                                    .unwrap_or(title)
+                                    .to_string();
+                                
+                                markets.push(LiveCryptoMarket {
+                                    condition_id,
+                                    yes_token_id: yes_token,
+                                    no_token_id: no_token,
+                                    yes_ask: 0.50,
+                                    no_ask: 0.50,
+                                    end_time: 0,
+                                    interval_minutes: 15,
+                                    description,
+                                });
+                            }
                         }
                     }
                 }
             }
+        }
+        
+        // If we found markets, stop searching
+        if !markets.is_empty() {
+            break;
         }
     }
     
