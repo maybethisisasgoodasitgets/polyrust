@@ -20,7 +20,7 @@ use pm_whale_follower::crypto_arb::{
     update_market_prices, ArbSignal, LiveCryptoMarket,
     MIN_PRICE_MOVE_PCT, MAX_BUY_PRICE, MIN_EDGE_PCT,
 };
-use pm_whale_follower::{ApiCreds, OrderArgs, RustClobClient, PreparedCreds};
+use pm_whale_follower::{OrderArgs, RustClobClient, PreparedCreds};
 use std::env;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
             serde_json::from_str(&data)?
         } else {
             println!("🔑 Creating API credentials...");
-            let new_creds = c.create_api_creds()?;
+            let new_creds = c.derive_api_key(0)?;
             std::fs::write(creds_path, serde_json::to_string_pretty(&new_creds)?)?;
             new_creds
         };
@@ -321,18 +321,23 @@ async fn execute_trade(
         fee_rate_bps: None,
         nonce: Some(0),
         expiration: None,
-        is_neg_risk: None,
+        taker: None,
         order_type: Some("FOK".to_string()),  // Fill or Kill for speed
     };
     
     // Execute via blocking call (TODO: make async)
     let result = tokio::task::spawn_blocking({
-        let client = client.clone();
+        let mut client = client.clone();
         let creds = creds.clone();
-        move || {
-            client.post_order(&order, &creds)
+        move || -> Result<String> {
+            let signed = client.create_order(order)?;
+            let body = signed.post_body(&creds.api_key, "FOK");
+            let resp = client.post_order_fast(body, &creds)?;
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+            Ok(format!("Status: {} - {}", status, text))
         }
     }).await??;
     
-    Ok(format!("Order submitted: {}", result))
+    Ok(result)
 }
