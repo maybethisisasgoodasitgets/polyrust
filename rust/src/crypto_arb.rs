@@ -385,8 +385,17 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("");
             
-            // Check for BTC 15-minute up/down markets
-            if slug.starts_with("btc-updown-15m-") || slug.contains("bitcoin-up-or-down") {
+            // Check for BTC markets: 5m, 15m, 4h up/down, and price target markets
+            let is_btc_updown = slug.starts_with("btc-updown-5m-") 
+                || slug.starts_with("btc-updown-15m-") 
+                || slug.starts_with("btc-updown-4h-")
+                || slug.contains("bitcoin-up-or-down");
+            let is_price_target = slug.starts_with("bitcoin-above-") 
+                || slug.starts_with("bitcoin-below-")
+                || slug.contains("bitcoin-hit")
+                || slug.contains("btc-hit");
+            
+            if is_btc_updown || is_price_target {
                 // Check if market is active (not closed)
                 let is_closed = market.get("closed")
                     .and_then(|c| c.as_bool())
@@ -399,7 +408,19 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                     continue;
                 }
                 
-                println!("   ✅ Found BTC 15m market: {}", slug);
+                // Determine market type for logging
+                let market_type = if slug.starts_with("btc-updown-5m-") {
+                    "5m"
+                } else if slug.starts_with("btc-updown-15m-") {
+                    "15m"
+                } else if slug.starts_with("btc-updown-4h-") {
+                    "4h"
+                } else if is_price_target {
+                    "price-target"
+                } else {
+                    "daily"
+                };
+                println!("   ✅ Found BTC {} market: {}", market_type, slug);
                 
                 // Debug: check what fields exist
                 let has_clob_tokens = market.get("clobTokenIds").is_some();
@@ -456,6 +477,17 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                         
                         println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
                         
+                        // Determine interval based on market type
+                        let interval_minutes = if slug.starts_with("btc-updown-5m-") {
+                            5
+                        } else if slug.starts_with("btc-updown-15m-") {
+                            15
+                        } else if slug.starts_with("btc-updown-4h-") {
+                            240
+                        } else {
+                            60  // Default for daily/price target markets
+                        };
+                        
                         markets.push(LiveCryptoMarket {
                             condition_id: market.get("conditionId")
                                 .and_then(|c| c.as_str())
@@ -466,7 +498,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                             yes_ask: yes_price,
                             no_ask: 1.0 - yes_price,
                             end_time: 0,
-                            interval_minutes: 15,
+                            interval_minutes,
                             description,
                         });
                     }
@@ -474,9 +506,9 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
             }
         }
         
-        // If we found some markets, we can stop paginating
-        if !markets.is_empty() {
-            println!("   Found {} BTC 15m markets, stopping pagination", markets.len());
+        // If we found enough markets, we can stop paginating
+        if markets.len() >= 10 {
+            println!("   Found {} BTC markets, stopping pagination", markets.len());
             break;
         }
     }
