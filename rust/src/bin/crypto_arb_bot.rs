@@ -18,7 +18,7 @@ use chrono;
 use dotenvy::dotenv;
 use pm_whale_follower::crypto_arb::{
     CryptoArbEngine, spawn_binance_feed, fetch_live_crypto_markets, 
-    update_market_prices, ArbSignal, LiveCryptoMarket,
+    update_market_prices, ArbSignal, LiveCryptoMarket, CryptoAsset,
     MIN_PRICE_MOVE_PCT, MAX_BUY_PRICE, MIN_EDGE_PCT,
 };
 use pm_whale_follower::{OrderArgs, RustClobClient, PreparedCreds};
@@ -231,18 +231,23 @@ async fn main() -> Result<()> {
         cfg.min_position_usd,
     );
     
-    // Start Binance price feed
-    println!("📡 Starting Binance BTC price feed...");
+    // Start Binance price feeds for both BTC and ETH
+    println!("📡 Starting Binance BTC + ETH price feeds...");
     let price_state = engine.price_state();
     let _binance_handle = spawn_binance_feed(price_state.clone());
     
-    // Wait for first price
-    println!("⏳ Waiting for initial BTC price...");
+    // Wait for first prices from both feeds
+    println!("⏳ Waiting for initial prices...");
     loop {
         let state = price_state.read().await;
-        if state.btc_price > 0.0 {
+        if state.btc_price > 0.0 && state.eth_price > 0.0 {
             println!("✅ Got initial BTC price: ${:.2}", state.btc_price);
+            println!("✅ Got initial ETH price: ${:.2}", state.eth_price);
             break;
+        } else if state.btc_price > 0.0 {
+            // BTC ready, still waiting for ETH
+        } else if state.eth_price > 0.0 {
+            // ETH ready, still waiting for BTC
         }
         drop(state);
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -331,10 +336,15 @@ async fn main() -> Result<()> {
                                 })
                                 .unwrap_or("?");
                             
+                            let asset_name = match signal.asset {
+                                CryptoAsset::BTC => "BTC",
+                                CryptoAsset::ETH => "ETH",
+                            };
                             println!("   📝 [MOCK TRADE] {}", timestamp);
                             println!("      Market: {} ({})", market_desc, market_type);
+                            println!("      Asset: {}", asset_name);
                             println!("      Direction: {}", if signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
-                            println!("      BTC Price: ${:.2} ({:+.3}% move)", signal.btc_price, signal.price_change_pct);
+                            println!("      {} Price: ${:.2} ({:+.3}% move)", asset_name, signal.crypto_price, signal.price_change_pct);
                             println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
                                 signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
                             println!("      Position Size: ${:.2}", signal.recommended_size_usd);
@@ -389,10 +399,12 @@ async fn main() -> Result<()> {
             }
             
             _ = price_log_interval.tick() => {
-                // Log current state
+                // Log current state for both BTC and ETH
                 let ps = price_state.read().await;
-                let change = ps.price_change_pct();
-                let direction = if change >= 0.0 { "⬆️" } else { "⬇️" };
+                let btc_change = ps.btc_change_pct();
+                let eth_change = ps.eth_change_pct();
+                let btc_dir = if btc_change >= 0.0 { "⬆️" } else { "⬇️" };
+                let eth_dir = if eth_change >= 0.0 { "⬆️" } else { "⬇️" };
                 let open_pos = state.open_positions.len();
                 let pnl_str = if state.estimated_pnl != 0.0 {
                     format!(" | P&L: ${:+.2}", state.estimated_pnl)
@@ -400,10 +412,9 @@ async fn main() -> Result<()> {
                     String::new()
                 };
                 println!(
-                    "📈 BTC ${:.2} | {} {:+.3}% | Trades: {} | Open: {}{} | {}",
-                    ps.btc_price,
-                    direction,
-                    change,
+                    "📈 BTC ${:.2} {}{:+.3}% | ETH ${:.2} {}{:+.3}% | Trades: {} | Open: {}{} | {}",
+                    ps.btc_price, btc_dir, btc_change,
+                    ps.eth_price, eth_dir, eth_change,
                     state.trades_executed,
                     open_pos,
                     pnl_str,

@@ -31,10 +31,20 @@ pub const MIN_EDGE_PCT: f64 = 2.0;  // 2% edge minimum
 pub const CHECK_INTERVAL_MS: u64 = 100;
 
 /// Binance WebSocket URL for BTC/USDT trades
-pub const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+pub const BINANCE_BTC_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+
+/// Binance WebSocket URL for ETH/USDT trades
+pub const BINANCE_ETH_WS_URL: &str = "wss://stream.binance.com:9443/ws/ethusdt@trade";
 
 /// Binance WebSocket URL for BTC/USDT ticker (more frequent updates)
 pub const BINANCE_TICKER_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@ticker";
+
+/// Crypto asset type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoAsset {
+    BTC,
+    ETH,
+}
 
 // ============================================================================
 // Price State
@@ -44,8 +54,12 @@ pub const BINANCE_TICKER_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusd
 pub struct PriceState {
     /// Current BTC price from Binance
     pub btc_price: f64,
-    /// Price at the start of the current Polymarket interval
-    pub interval_start_price: f64,
+    /// BTC price at the start of the current Polymarket interval
+    pub btc_interval_start_price: f64,
+    /// Current ETH price from Binance
+    pub eth_price: f64,
+    /// ETH price at the start of the current Polymarket interval
+    pub eth_interval_start_price: f64,
     /// Timestamp of last price update
     pub last_update: Instant,
     /// Timestamp of interval start
@@ -56,7 +70,9 @@ impl Default for PriceState {
     fn default() -> Self {
         Self {
             btc_price: 0.0,
-            interval_start_price: 0.0,
+            btc_interval_start_price: 0.0,
+            eth_price: 0.0,
+            eth_interval_start_price: 0.0,
             last_update: Instant::now(),
             interval_start_time: Instant::now(),
         }
@@ -64,22 +80,44 @@ impl Default for PriceState {
 }
 
 impl PriceState {
-    /// Calculate price change percentage since interval start
-    pub fn price_change_pct(&self) -> f64 {
-        if self.interval_start_price == 0.0 {
+    /// Calculate BTC price change percentage since interval start
+    pub fn btc_change_pct(&self) -> f64 {
+        if self.btc_interval_start_price == 0.0 {
             return 0.0;
         }
-        ((self.btc_price - self.interval_start_price) / self.interval_start_price) * 100.0
+        ((self.btc_price - self.btc_interval_start_price) / self.btc_interval_start_price) * 100.0
     }
     
-    /// Returns true if price is up since interval start
-    pub fn is_up(&self) -> bool {
-        self.btc_price > self.interval_start_price
+    /// Calculate ETH price change percentage since interval start
+    pub fn eth_change_pct(&self) -> f64 {
+        if self.eth_interval_start_price == 0.0 {
+            return 0.0;
+        }
+        ((self.eth_price - self.eth_interval_start_price) / self.eth_interval_start_price) * 100.0
     }
     
-    /// Returns true if price is down since interval start
-    pub fn is_down(&self) -> bool {
-        self.btc_price < self.interval_start_price
+    /// Get price change for a specific asset
+    pub fn price_change_pct(&self, asset: CryptoAsset) -> f64 {
+        match asset {
+            CryptoAsset::BTC => self.btc_change_pct(),
+            CryptoAsset::ETH => self.eth_change_pct(),
+        }
+    }
+    
+    /// Get current price for a specific asset
+    pub fn current_price(&self, asset: CryptoAsset) -> f64 {
+        match asset {
+            CryptoAsset::BTC => self.btc_price,
+            CryptoAsset::ETH => self.eth_price,
+        }
+    }
+    
+    /// Returns true if asset price is up since interval start
+    pub fn is_up(&self, asset: CryptoAsset) -> bool {
+        match asset {
+            CryptoAsset::BTC => self.btc_price > self.btc_interval_start_price,
+            CryptoAsset::ETH => self.eth_price > self.eth_interval_start_price,
+        }
     }
 }
 
@@ -139,6 +177,8 @@ pub struct LiveCryptoMarket {
     pub interval_minutes: u32,
     /// Description (e.g., "BTC up or down in next 5 minutes")
     pub description: String,
+    /// Which crypto asset this market is for
+    pub asset: CryptoAsset,
 }
 
 // ============================================================================
@@ -155,8 +195,10 @@ pub struct ArbSignal {
     pub buy_price: f64,
     /// Estimated edge percentage
     pub edge_pct: f64,
-    /// Current BTC price
-    pub btc_price: f64,
+    /// Current crypto price
+    pub crypto_price: f64,
+    /// Which asset (BTC or ETH)
+    pub asset: CryptoAsset,
     /// Price change since interval start
     pub price_change_pct: f64,
     /// Confidence level (0-100)
@@ -207,13 +249,19 @@ impl CryptoArbEngine {
     pub async fn check_opportunity(&self) -> Option<ArbSignal> {
         let market = self.market.as_ref()?;
         let state = self.price_state.read().await;
+        let asset = market.asset;
         
-        // Need valid prices
-        if state.btc_price == 0.0 || state.interval_start_price == 0.0 {
+        // Need valid prices for the relevant asset
+        let (current_price, interval_start) = match asset {
+            CryptoAsset::BTC => (state.btc_price, state.btc_interval_start_price),
+            CryptoAsset::ETH => (state.eth_price, state.eth_interval_start_price),
+        };
+        
+        if current_price == 0.0 || interval_start == 0.0 {
             return None;
         }
         
-        let change_pct = state.price_change_pct();
+        let change_pct = state.price_change_pct(asset);
         let abs_change = change_pct.abs();
         
         // Market-type-specific minimum price move thresholds
@@ -232,7 +280,7 @@ impl CryptoArbEngine {
         }
         
         // Determine direction and get relevant market prices
-        let (bet_up, token_id, market_ask) = if state.is_up() {
+        let (bet_up, token_id, market_ask) = if state.is_up(asset) {
             (true, market.yes_token_id.clone(), market.yes_ask)
         } else {
             (false, market.no_token_id.clone(), market.no_ask)
@@ -290,17 +338,19 @@ impl CryptoArbEngine {
             token_id,
             buy_price: market_ask,
             edge_pct,
-            btc_price: state.btc_price,
+            crypto_price: current_price,
+            asset,
             price_change_pct: change_pct,
             confidence,
             recommended_size_usd: recommended_size,
         })
     }
     
-    /// Reset interval (call when new Polymarket interval starts)
+    /// Reset interval for both assets (call when new Polymarket interval starts)
     pub async fn reset_interval(&self) {
         let mut state = self.price_state.write().await;
-        state.interval_start_price = state.btc_price;
+        state.btc_interval_start_price = state.btc_price;
+        state.eth_interval_start_price = state.eth_price;
         state.interval_start_time = Instant::now();
     }
 }
@@ -309,26 +359,49 @@ impl CryptoArbEngine {
 // Binance Price Feed
 // ============================================================================
 
-/// Spawn a task that maintains a WebSocket connection to Binance
+/// Spawn a task that maintains WebSocket connections to Binance for both BTC and ETH
 /// and updates the shared price state
 pub fn spawn_binance_feed(price_state: Arc<RwLock<PriceState>>) -> tokio::task::JoinHandle<()> {
+    let btc_state = price_state.clone();
+    let eth_state = price_state.clone();
+    
+    // Spawn BTC feed
     tokio::spawn(async move {
         loop {
-            if let Err(e) = run_binance_feed(price_state.clone()).await {
-                eprintln!("⚠️ Binance feed error: {}. Reconnecting in 3s...", e);
+            if let Err(e) = run_binance_feed(btc_state.clone(), CryptoAsset::BTC).await {
+                eprintln!("⚠️ Binance BTC feed error: {}. Reconnecting in 3s...", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    });
+    
+    // Spawn ETH feed
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = run_binance_feed(eth_state.clone(), CryptoAsset::ETH).await {
+                eprintln!("⚠️ Binance ETH feed error: {}. Reconnecting in 3s...", e);
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
     })
 }
 
-async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>) -> Result<()> {
-    println!("🔌 Connecting to Binance WebSocket...");
+async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAsset) -> Result<()> {
+    let ws_url = match asset {
+        CryptoAsset::BTC => BINANCE_BTC_WS_URL,
+        CryptoAsset::ETH => BINANCE_ETH_WS_URL,
+    };
+    let asset_name = match asset {
+        CryptoAsset::BTC => "BTC",
+        CryptoAsset::ETH => "ETH",
+    };
     
-    let (ws_stream, _) = connect_async(BINANCE_WS_URL).await
-        .map_err(|e| anyhow!("Failed to connect to Binance: {}", e))?;
+    println!("🔌 Connecting to Binance {} WebSocket...", asset_name);
     
-    println!("✅ Connected to Binance BTC/USDT feed");
+    let (ws_stream, _) = connect_async(ws_url).await
+        .map_err(|e| anyhow!("Failed to connect to Binance {}: {}", asset_name, e))?;
+    
+    println!("✅ Connected to Binance {}/USDT feed", asset_name);
     
     let (mut _write, mut read) = ws_stream.split();
     
@@ -339,13 +412,22 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>) -> Result<()> {
                     if let Ok(price) = trade.price.parse::<f64>() {
                         let mut state = price_state.write().await;
                         
-                        // Initialize interval start price if not set
-                        if state.interval_start_price == 0.0 {
-                            state.interval_start_price = price;
-                            state.interval_start_time = Instant::now();
+                        match asset {
+                            CryptoAsset::BTC => {
+                                // Initialize interval start price if not set
+                                if state.btc_interval_start_price == 0.0 {
+                                    state.btc_interval_start_price = price;
+                                }
+                                state.btc_price = price;
+                            }
+                            CryptoAsset::ETH => {
+                                // Initialize interval start price if not set
+                                if state.eth_interval_start_price == 0.0 {
+                                    state.eth_interval_start_price = price;
+                                }
+                                state.eth_price = price;
+                            }
                         }
-                        
-                        state.btc_price = price;
                         state.last_update = Instant::now();
                     }
                 }
@@ -423,12 +505,31 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 || slug.starts_with("btc-updown-15m-") 
                 || slug.starts_with("btc-updown-4h-")
                 || slug.contains("bitcoin-up-or-down");
-            let is_price_target = slug.starts_with("bitcoin-above-") 
+            let is_btc_price_target = slug.starts_with("bitcoin-above-") 
                 || slug.starts_with("bitcoin-below-")
                 || slug.contains("bitcoin-hit")
                 || slug.contains("btc-hit");
             
-            if is_btc_updown || is_price_target {
+            // Check for ETH markets: 5m, 15m, 4h up/down
+            let is_eth_updown = slug.starts_with("eth-updown-5m-") 
+                || slug.starts_with("eth-updown-15m-") 
+                || slug.starts_with("eth-updown-4h-")
+                || slug.contains("ethereum-up-or-down");
+            let is_eth_price_target = slug.starts_with("ethereum-above-") 
+                || slug.starts_with("ethereum-below-")
+                || slug.contains("ethereum-hit")
+                || slug.contains("eth-hit");
+            
+            // Determine which asset this market is for
+            let asset = if is_btc_updown || is_btc_price_target {
+                Some(CryptoAsset::BTC)
+            } else if is_eth_updown || is_eth_price_target {
+                Some(CryptoAsset::ETH)
+            } else {
+                None
+            };
+            
+            if let Some(asset) = asset {
                 // Check if market is active (not closed)
                 let is_closed = market.get("closed")
                     .and_then(|c| c.as_bool())
@@ -442,18 +543,22 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 }
                 
                 // Determine market type for logging
-                let market_type = if slug.starts_with("btc-updown-5m-") {
+                let market_type = if slug.contains("-5m-") {
                     "5m"
-                } else if slug.starts_with("btc-updown-15m-") {
+                } else if slug.contains("-15m-") {
                     "15m"
-                } else if slug.starts_with("btc-updown-4h-") {
+                } else if slug.contains("-4h-") {
                     "4h"
-                } else if is_price_target {
+                } else if is_btc_price_target || is_eth_price_target {
                     "price-target"
                 } else {
                     "daily"
                 };
-                println!("   ✅ Found BTC {} market: {}", market_type, slug);
+                let asset_name = match asset {
+                    CryptoAsset::BTC => "BTC",
+                    CryptoAsset::ETH => "ETH",
+                };
+                println!("   ✅ Found {} {} market: {}", asset_name, market_type, slug);
                 
                 // Debug: check what fields exist
                 let has_clob_tokens = market.get("clobTokenIds").is_some();
@@ -510,12 +615,12 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                         
                         println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
                         
-                        // Determine interval based on market type
-                        let interval_minutes = if slug.starts_with("btc-updown-5m-") {
+                        // Determine interval based on market type (works for both BTC and ETH)
+                        let interval_minutes = if slug.contains("-5m-") {
                             5
-                        } else if slug.starts_with("btc-updown-15m-") {
+                        } else if slug.contains("-15m-") {
                             15
-                        } else if slug.starts_with("btc-updown-4h-") {
+                        } else if slug.contains("-4h-") {
                             240
                         } else {
                             60  // Default for daily/price target markets
@@ -533,6 +638,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                             end_time: 0,
                             interval_minutes,
                             description,
+                            asset,
                         });
                     }
                 }
@@ -540,8 +646,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
         }
         
         // If we found enough markets, we can stop paginating
-        if markets.len() >= 10 {
-            println!("   Found {} BTC markets, stopping pagination", markets.len());
+        if markets.len() >= 20 {
+            println!("   Found {} crypto markets (BTC + ETH), stopping pagination", markets.len());
             break;
         }
     }
@@ -722,11 +828,16 @@ pub async fn update_market_prices(market: &mut LiveCryptoMarket) -> Result<()> {
 impl std::fmt::Display for ArbSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let direction = if self.bet_up { "⬆️ UP" } else { "⬇️ DOWN" };
+        let asset_name = match self.asset {
+            CryptoAsset::BTC => "BTC",
+            CryptoAsset::ETH => "ETH",
+        };
         write!(
             f,
-            "{} | BTC ${:.2} ({:+.3}%) | Buy @ {:.2}¢ | Edge {:.1}% | Size ${:.2} | Conf {}%",
+            "{} | {} ${:.2} ({:+.3}%) | Buy @ {:.2}¢ | Edge {:.1}% | Size ${:.2} | Conf {}%",
             direction,
-            self.btc_price,
+            asset_name,
+            self.crypto_price,
             self.price_change_pct,
             self.buy_price * 100.0,
             self.edge_pct,
@@ -745,24 +856,22 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_price_change_calculation() {
+    fn test_btc_price_change_calculation() {
         let mut state = PriceState::default();
-        state.interval_start_price = 100000.0;
+        state.btc_interval_start_price = 100000.0;
         state.btc_price = 100500.0;
         
-        assert!((state.price_change_pct() - 0.5).abs() < 0.001);
-        assert!(state.is_up());
-        assert!(!state.is_down());
+        assert!((state.btc_change_pct() - 0.5).abs() < 0.001);
+        assert!(state.is_up(CryptoAsset::BTC));
     }
     
     #[test]
-    fn test_price_down() {
+    fn test_eth_price_change_calculation() {
         let mut state = PriceState::default();
-        state.interval_start_price = 100000.0;
-        state.btc_price = 99500.0;
+        state.eth_interval_start_price = 3000.0;
+        state.eth_price = 3015.0;
         
-        assert!((state.price_change_pct() - (-0.5)).abs() < 0.001);
-        assert!(!state.is_up());
-        assert!(state.is_down());
+        assert!((state.eth_change_pct() - 0.5).abs() < 0.001);
+        assert!(state.is_up(CryptoAsset::ETH));
     }
 }
