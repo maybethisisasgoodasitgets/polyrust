@@ -389,10 +389,26 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
             if slug.starts_with("btc-updown-15m-") || slug.contains("bitcoin-up-or-down") {
                 println!("   ✅ Found BTC 15m market: {}", slug);
                 
-                if let Some(clob_tokens) = market.get("clobTokenIds").and_then(|t| t.as_array()) {
+                // Debug: check what fields exist
+                let has_clob_tokens = market.get("clobTokenIds").is_some();
+                let clob_tokens_raw = market.get("clobTokenIds");
+                
+                if !has_clob_tokens {
+                    println!("      ⚠️ No clobTokenIds field! Keys: {:?}", 
+                        market.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                    continue;
+                }
+                
+                if let Some(clob_tokens) = clob_tokens_raw.and_then(|t| t.as_array()) {
+                    println!("      clobTokenIds count: {}", clob_tokens.len());
+                    
                     if clob_tokens.len() >= 2 {
                         let yes_token = clob_tokens[0].as_str().unwrap_or("").to_string();
                         let no_token = clob_tokens[1].as_str().unwrap_or("").to_string();
+                        
+                        println!("      yes_token: {}..., no_token: {}...", 
+                            &yes_token[..yes_token.len().min(20)],
+                            &no_token[..no_token.len().min(20)]);
                         
                         if !yes_token.is_empty() && !no_token.is_empty() {
                             let description = market.get("question")
@@ -407,6 +423,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.parse::<f64>().ok())
                                 .unwrap_or(0.50);
+                            
+                            println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
                             
                             markets.push(LiveCryptoMarket {
                                 condition_id: market.get("conditionId")
@@ -423,6 +441,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                             });
                         }
                     }
+                } else {
+                    println!("      ⚠️ clobTokenIds not an array: {:?}", clob_tokens_raw);
                 }
             }
         }
