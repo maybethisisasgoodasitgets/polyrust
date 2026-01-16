@@ -344,13 +344,14 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
     let mut markets = Vec::new();
     
     // Try multiple API endpoints to find live crypto markets
+    // Per Reddit: 15-min BTC markets are in /markets endpoint, not /events
     let urls = [
-        // Live crypto markets endpoint (15-minute intervals)
-        "https://gamma-api.polymarket.com/events?active=true&closed=false&tag=crypto&limit=100",
-        // Search by slug pattern for BTC up/down markets
-        "https://gamma-api.polymarket.com/events?active=true&closed=false&slug_contains=btc-updown&limit=50",
-        // Try markets endpoint directly
-        "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100",
+        // Markets endpoint with slug filter for BTC up/down 15-minute markets
+        "https://gamma-api.polymarket.com/markets?active=true&closed=false&slug_contains=btc-updown&limit=100",
+        // Try with different slug patterns
+        "https://gamma-api.polymarket.com/markets?active=true&closed=false&slug_contains=bitcoin-up&limit=100",
+        // Pagination endpoint
+        "https://gamma-api.polymarket.com/markets/pagination?active=true&closed=false&limit=500",
     ];
     
     for url in urls {
