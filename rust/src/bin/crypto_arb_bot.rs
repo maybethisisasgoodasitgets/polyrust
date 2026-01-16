@@ -253,7 +253,7 @@ async fn main() -> Result<()> {
                         if cfg.mock_trading {
                             println!("   📝 [MOCK] Would execute trade");
                             state.record_trade(&signal);
-                        } else if let (Some(ref client), Some(ref creds)) = (&client, &creds) {
+                        } else if let (Some(client), Some(creds)) = (&client, &creds) {
                             // Execute real trade
                             match execute_trade(client, creds, &signal).await {
                                 Ok(result) => {
