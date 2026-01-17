@@ -458,10 +458,7 @@ async fn main() -> Result<()> {
                                     println!("📊 Switched to: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
                                     engine.set_market(m.clone());
                                     // Reset price interval for new market
-                                    {
-                                        let mut ps = price_state.write().await;
-                                        ps.reset_interval(m.asset);
-                                    }
+                                    engine.reset_interval().await;
                                     active_market = Some(m);
                                     break;
                                 }
