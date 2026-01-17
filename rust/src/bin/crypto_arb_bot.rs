@@ -435,14 +435,40 @@ async fn main() -> Result<()> {
             }
             
             _ = market_refresh_interval.tick() => {
-                // Refresh market prices (but don't reset interval - that happens on actual market window changes)
+                // Refresh market prices - if orderbook is gone, find a new market
+                let mut need_new_market = active_market.is_none();
+                
                 if let Some(ref mut market) = active_market {
                     if let Err(e) = update_market_prices(market).await {
-                        eprintln!("⚠️ Failed to refresh market prices: {}", e);
+                        println!("⚠️ Market {} no longer active: {}", market.description, e);
+                        need_new_market = true;
+                    } else {
+                        engine.set_market(market.clone());
                     }
-                    engine.set_market(market.clone());
                 }
-                // Note: Don't reset interval here - we want to track price change over the full market window
+                
+                // Find a new active market if needed
+                if need_new_market {
+                    println!("🔄 Searching for new active market...");
+                    if let Ok(markets) = fetch_live_crypto_markets().await {
+                        for mut m in markets {
+                            if update_market_prices(&mut m).await.is_ok() {
+                                let distance = (m.yes_ask - 0.50).abs();
+                                if distance < 0.10 && m.yes_ask <= 0.92 {
+                                    println!("📊 Switched to: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                                    engine.set_market(m.clone());
+                                    // Reset price interval for new market
+                                    {
+                                        let mut ps = price_state.write().await;
+                                        ps.reset_interval(m.asset);
+                                    }
+                                    active_market = Some(m);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

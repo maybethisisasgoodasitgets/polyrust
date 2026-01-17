@@ -793,6 +793,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
 }
 
 /// Update market prices from order book
+/// Returns error if orderbook doesn't exist (market not yet active)
 pub async fn update_market_prices(market: &mut LiveCryptoMarket) -> Result<()> {
     let client = reqwest::Client::new();
     
@@ -802,19 +803,35 @@ pub async fn update_market_prices(market: &mut LiveCryptoMarket) -> Result<()> {
         market.yes_token_id
     );
     
-    if let Ok(resp) = client.get(&yes_url)
+    let resp = client.get(&yes_url)
         .timeout(Duration::from_secs(5))
         .send()
         .await
-    {
-        if let Ok(book) = resp.json::<serde_json::Value>().await {
-            if let Some(asks) = book.get("asks").and_then(|a| a.as_array()) {
-                if let Some(best_ask) = asks.first() {
-                    if let Some(price) = best_ask.get("price").and_then(|p| p.as_str()) {
-                        market.yes_ask = price.parse().unwrap_or(0.50);
-                    }
-                }
-            }
+        .map_err(|e| anyhow!("Failed to fetch orderbook: {}", e))?;
+    
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    
+    // Check for "orderbook does not exist" error
+    if body.contains("does not exist") || status.as_u16() == 400 {
+        return Err(anyhow!("Orderbook not active yet"));
+    }
+    
+    let book: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| anyhow!("Invalid orderbook response"))?;
+    
+    // Check if there are any asks (liquidity)
+    let asks = book.get("asks")
+        .and_then(|a| a.as_array())
+        .ok_or_else(|| anyhow!("No asks in orderbook"))?;
+    
+    if asks.is_empty() {
+        return Err(anyhow!("Orderbook has no liquidity"));
+    }
+    
+    if let Some(best_ask) = asks.first() {
+        if let Some(price) = best_ask.get("price").and_then(|p| p.as_str()) {
+            market.yes_ask = price.parse().unwrap_or(0.50);
         }
     }
     
