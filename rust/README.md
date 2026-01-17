@@ -173,6 +173,14 @@ The `crypto_arb_bot` binary provides latency arbitrage on Polymarket's crypto ma
 - Measures consistency (are all moves in same direction?)
 - Only trades when momentum **supports** the price move
 
+**Multi-Market Trading:**
+
+The bot trades BTC and ETH markets simultaneously:
+- Tracks separate markets for each asset
+- Independent position management (can hold BTC + ETH positions at same time)
+- Automatic market discovery and switching
+- Per-asset momentum analysis
+
 **Run the crypto arb bot:**
 ```bash
 # Mock trading (paper trading)
