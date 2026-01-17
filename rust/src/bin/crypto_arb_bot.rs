@@ -275,7 +275,7 @@ async fn main() -> Result<()> {
         }
     }
     
-    // Find the market with the best (lowest) price - closer to 50¢ is better
+    // Find the market with the best price - closer to 50¢ is better for arbitrage
     let mut active_market: Option<LiveCryptoMarket> = None;
     let mut best_price_distance = f64::MAX;
     
@@ -286,14 +286,16 @@ async fn main() -> Result<()> {
             continue;
         }
         
-        // Calculate how close to 50¢ (ideal for arbitrage)
-        let min_price = market.yes_ask.min(market.no_ask);
-        let distance_from_50 = (min_price - 0.50).abs();
+        // For arbitrage, we want YES price close to 50¢ (undecided market)
+        // Skip markets where outcome is already heavily decided (YES > 80¢ or YES < 20¢)
+        let yes_price = market.yes_ask;
+        let distance_from_50 = (yes_price - 0.50).abs();
         
         println!("   {} - Yes: {:.2}¢, No: {:.2}¢ (distance from 50¢: {:.2})", 
             market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
         
-        if distance_from_50 < best_price_distance && min_price <= 0.92 {
+        // Only consider markets with YES between 20¢ and 80¢ (undecided)
+        if yes_price >= 0.20 && yes_price <= 0.80 && distance_from_50 < best_price_distance {
             best_price_distance = distance_from_50;
             active_market = Some(market);
         }
@@ -450,20 +452,31 @@ async fn main() -> Result<()> {
                 // Find a new active market if needed
                 if need_new_market {
                     println!("🔄 Searching for new active market...");
+                    let mut best_market: Option<LiveCryptoMarket> = None;
+                    let mut best_distance = f64::MAX;
+                    
                     if let Ok(markets) = fetch_live_crypto_markets().await {
                         for mut m in markets {
                             if update_market_prices(&mut m).await.is_ok() {
-                                let distance = (m.yes_ask - 0.50).abs();
-                                if distance < 0.10 && m.yes_ask <= 0.92 {
-                                    println!("📊 Switched to: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
-                                    engine.set_market(m.clone());
-                                    // Reset price interval for new market
-                                    engine.reset_interval().await;
-                                    active_market = Some(m);
-                                    break;
+                                let yes_price = m.yes_ask;
+                                let distance = (yes_price - 0.50).abs();
+                                // Only consider undecided markets (YES between 20-80¢)
+                                if yes_price >= 0.20 && yes_price <= 0.80 && distance < best_distance {
+                                    best_distance = distance;
+                                    best_market = Some(m);
                                 }
                             }
                         }
+                    }
+                    
+                    if let Some(m) = best_market {
+                        println!("📊 Switched to: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                        engine.set_market(m.clone());
+                        engine.reset_interval().await;
+                        active_market = Some(m);
+                    } else {
+                        println!("⚠️ No undecided markets available (need YES between 20-80¢)");
+                        active_market = None;
                     }
                 }
             }
