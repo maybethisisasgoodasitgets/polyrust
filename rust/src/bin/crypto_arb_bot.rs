@@ -422,6 +422,8 @@ async fn main() -> Result<()> {
                     let asset_name = match signal.asset {
                         CryptoAsset::BTC => "BTC",
                         CryptoAsset::ETH => "ETH",
+                        CryptoAsset::SOL => "SOL",
+                        CryptoAsset::XRP => "XRP",
                     };
                     
                     // Get market info for this asset
