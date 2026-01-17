@@ -93,9 +93,10 @@ struct OpenPosition {
     entry_price: f64,
     direction_up: bool,
     entry_time: Instant,
-    entry_btc_price: f64,
+    entry_crypto_price: f64,
     market_description: String,
     interval_minutes: u32,
+    asset: CryptoAsset,
 }
 
 // Exit thresholds
@@ -130,14 +131,27 @@ impl TradingState {
             entry_price: signal.buy_price,
             direction_up: signal.bet_up,
             entry_time: Instant::now(),
-            entry_btc_price: signal.crypto_price,
+            entry_crypto_price: signal.crypto_price,
             market_description: market_desc.to_string(),
             interval_minutes,
+            asset: signal.asset,
         });
     }
     
+    /// Check if we can trade a specific asset (separate cooldowns per asset)
+    fn can_trade_asset(&self, asset: CryptoAsset) -> bool {
+        // Check if we have a recent trade for this specific asset
+        for pos in &self.open_positions {
+            if pos.asset == asset {
+                return false;  // Already have an open position for this asset
+            }
+        }
+        true
+    }
+    
     /// Check positions for exit conditions and return positions to close
-    fn check_exits(&mut self, current_crypto_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
+    /// Now takes both BTC and ETH prices for multi-asset support
+    fn check_exits_multi(&mut self, btc_price: f64, eth_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
         let mut exits = Vec::new();
         let mut remaining = Vec::new();
         
@@ -145,8 +159,14 @@ impl TradingState {
             let hold_time = pos.entry_time.elapsed();
             let max_hold_time = Duration::from_secs((pos.interval_minutes as u64) * 60 * 8 / 10); // 80% of interval
             
+            // Get the correct price for this position's asset
+            let current_crypto_price = match pos.asset {
+                CryptoAsset::BTC => btc_price,
+                CryptoAsset::ETH => eth_price,
+            };
+            
             // Calculate current P&L based on crypto price movement since entry
-            let crypto_change_pct = ((current_crypto_price - pos.entry_btc_price) / pos.entry_btc_price) * 100.0;
+            let crypto_change_pct = ((current_crypto_price - pos.entry_crypto_price) / pos.entry_crypto_price) * 100.0;
             
             // If we bet UP and crypto went up, we're winning (and vice versa)
             // Use a more realistic multiplier based on how binary options work
@@ -261,7 +281,7 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     
-    // Find live crypto markets
+    // Find live crypto markets - MULTI-MARKET MODE
     println!("🔍 Searching for live crypto markets on Polymarket...");
     let markets = fetch_live_crypto_markets().await?;
     
@@ -271,13 +291,16 @@ async fn main() -> Result<()> {
     } else {
         println!("✅ Found {} potential crypto markets", markets.len());
         for (i, m) in markets.iter().enumerate() {
-            println!("   {}. {}", i + 1, m.description);
+            let asset_str = match m.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
+            println!("   {}. [{}] {}", i + 1, asset_str, m.description);
         }
     }
     
-    // Find the market with the best price - closer to 50¢ is better for arbitrage
-    let mut active_market: Option<LiveCryptoMarket> = None;
-    let mut best_price_distance = f64::MAX;
+    // Find best market for EACH asset (BTC and ETH separately)
+    let mut best_btc_market: Option<LiveCryptoMarket> = None;
+    let mut best_btc_distance = f64::MAX;
+    let mut best_eth_market: Option<LiveCryptoMarket> = None;
+    let mut best_eth_distance = f64::MAX;
     
     for mut market in markets {
         // Update market prices from CLOB
@@ -286,28 +309,50 @@ async fn main() -> Result<()> {
             continue;
         }
         
-        // For arbitrage, we want YES price close to 50¢ (undecided market)
-        // Skip markets where outcome is already heavily decided (YES > 80¢ or YES < 20¢)
         let yes_price = market.yes_ask;
         let distance_from_50 = (yes_price - 0.50).abs();
         
-        println!("   {} - Yes: {:.2}¢, No: {:.2}¢ (distance from 50¢: {:.2})", 
-            market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
+        let asset_str = match market.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
+        println!("   [{}] {} - Yes: {:.2}¢, No: {:.2}¢ (distance: {:.2})", 
+            asset_str, market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
         
-        // Only consider markets with YES between 20¢ and 80¢ (undecided)
-        if yes_price >= 0.20 && yes_price <= 0.80 && distance_from_50 < best_price_distance {
-            best_price_distance = distance_from_50;
-            active_market = Some(market);
+        // Only consider undecided markets (YES between 20¢ and 80¢)
+        if yes_price >= 0.20 && yes_price <= 0.80 {
+            match market.asset {
+                CryptoAsset::BTC => {
+                    if distance_from_50 < best_btc_distance {
+                        best_btc_distance = distance_from_50;
+                        best_btc_market = Some(market);
+                    }
+                }
+                CryptoAsset::ETH => {
+                    if distance_from_50 < best_eth_distance {
+                        best_eth_distance = distance_from_50;
+                        best_eth_market = Some(market);
+                    }
+                }
+            }
         }
     }
     
-    if let Some(ref market) = active_market {
-        println!("📊 Selected market: {} - Yes: {:.2}¢, No: {:.2}¢", 
-            market.description, market.yes_ask * 100.0, market.no_ask * 100.0);
-        engine.set_market(market.clone());
+    // Set up multi-market tracking
+    println!();
+    println!("📊 MULTI-MARKET MODE:");
+    if let Some(ref market) = best_btc_market {
+        println!("   🟠 BTC: {} - Yes: {:.2}¢", market.description, market.yes_ask * 100.0);
+        engine.set_market_for_asset(market.clone());
     } else {
-        println!("⚠️ No markets with prices ≤92¢ found - all markets already heavily traded");
+        println!("   🟠 BTC: No active market found");
     }
+    if let Some(ref market) = best_eth_market {
+        println!("   🔵 ETH: {} - Yes: {:.2}¢", market.description, market.yes_ask * 100.0);
+        engine.set_market_for_asset(market.clone());
+    } else {
+        println!("   🔵 ETH: No active market found");
+    }
+    
+    // Keep legacy single-market for backward compatibility
+    let active_market = best_btc_market.clone().or(best_eth_market.clone());
     
     // Trading state
     let mut state = TradingState::new();
@@ -325,86 +370,84 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
-                // Check for arbitrage opportunity
-                if let Some(signal) = engine.check_opportunity().await {
-                    if state.can_trade() {
-                        println!("🎰 SIGNAL: {}", signal);
-                        
-                        if cfg.mock_trading {
-                            // Log detailed mock trade for analysis
-                            let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-                            let market_desc = active_market.as_ref()
-                                .map(|m| m.description.as_str())
-                                .unwrap_or("Unknown");
-                            let market_type = active_market.as_ref()
-                                .map(|m| match m.interval_minutes {
-                                    5 => "5m",
-                                    15 => "15m", 
-                                    60 => "1h",
-                                    240 => "4h",
-                                    _ => "daily"
-                                })
-                                .unwrap_or("?");
-                            
-                            let asset_name = match signal.asset {
-                                CryptoAsset::BTC => "BTC",
-                                CryptoAsset::ETH => "ETH",
-                            };
-                            println!("   📝 [MOCK TRADE] {}", timestamp);
-                            println!("      Market: {} ({})", market_desc, market_type);
-                            println!("      Asset: {}", asset_name);
-                            println!("      Direction: {}", if signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
-                            println!("      {} Price: ${:.2} ({:+.3}% move)", asset_name, signal.crypto_price, signal.price_change_pct);
-                            println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
-                                signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
-                            println!("      Position Size: ${:.2}", signal.recommended_size_usd);
-                            println!("      Exit Strategy: TP +{}% | SL {}% | Time {}% of interval", 
-                                TAKE_PROFIT_PCT, STOP_LOSS_PCT, (MAX_HOLD_MULTIPLIER * 100.0) as i32);
-                            println!("      ---");
-                            let interval_mins = active_market.as_ref().map(|m| m.interval_minutes).unwrap_or(15);
-                            state.record_trade(&signal, market_desc, interval_mins);
-                        } else if let (Some(client), Some(creds)) = (&client, &creds) {
-                            // Execute real trade
-                            let market_desc = active_market.as_ref()
-                                .map(|m| m.description.as_str())
-                                .unwrap_or("Unknown");
-                            let interval_mins = active_market.as_ref().map(|m| m.interval_minutes).unwrap_or(15);
-                            match execute_trade(client, creds, &signal).await {
-                                Ok(result) => {
-                                    println!("   ✅ Trade executed: {}", result);
-                                    state.record_trade(&signal, market_desc, interval_mins);
-                                }
-                                Err(e) => {
-                                    println!("   ❌ Trade failed: {}", e);
-                                }
+                // MULTI-MARKET: Check for arbitrage opportunities on ALL active markets
+                let signals = engine.check_all_opportunities().await;
+                
+                for signal in signals {
+                    // Check if we can trade this specific asset (no open position for it)
+                    if !state.can_trade_asset(signal.asset) {
+                        continue;  // Already have an open position for this asset
+                    }
+                    
+                    println!("🎰 SIGNAL: {}", signal);
+                    
+                    let asset_name = match signal.asset {
+                        CryptoAsset::BTC => "BTC",
+                        CryptoAsset::ETH => "ETH",
+                    };
+                    
+                    // Get market info for this asset
+                    let market_info = engine.get_market(signal.asset);
+                    let market_desc = market_info.map(|m| m.description.as_str()).unwrap_or("Unknown");
+                    let interval_mins = market_info.map(|m| m.interval_minutes).unwrap_or(15);
+                    let market_type = match interval_mins {
+                        5 => "5m",
+                        15 => "15m", 
+                        60 => "1h",
+                        240 => "4h",
+                        _ => "daily"
+                    };
+                    
+                    if cfg.mock_trading {
+                        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+                        println!("   📝 [MOCK TRADE] {}", timestamp);
+                        println!("      Market: {} ({})", market_desc, market_type);
+                        println!("      Asset: {}", asset_name);
+                        println!("      Direction: {}", if signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
+                        println!("      {} Price: ${:.2} ({:+.3}% move)", asset_name, signal.crypto_price, signal.price_change_pct);
+                        println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
+                            signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
+                        println!("      Position Size: ${:.2}", signal.recommended_size_usd);
+                        println!("      Exit Strategy: TP +{}% | SL {}% | Time {}% of interval", 
+                            TAKE_PROFIT_PCT, STOP_LOSS_PCT, (MAX_HOLD_MULTIPLIER * 100.0) as i32);
+                        println!("      ---");
+                        state.record_trade(&signal, market_desc, interval_mins);
+                    } else if let (Some(client), Some(creds)) = (&client, &creds) {
+                        match execute_trade(client, creds, &signal).await {
+                            Ok(result) => {
+                                println!("   ✅ Trade executed: {}", result);
+                                state.record_trade(&signal, market_desc, interval_mins);
+                            }
+                            Err(e) => {
+                                println!("   ❌ Trade failed: {}", e);
                             }
                         }
                     }
                 }
                 
-                // Check for exit conditions on open positions
-                // Use the asset-specific price for the active market
-                let current_crypto = {
+                // Check for exit conditions on open positions (multi-asset)
+                let (btc_price, eth_price) = {
                     let ps = price_state.read().await;
-                    match active_market.as_ref().map(|m| m.asset) {
-                        Some(CryptoAsset::ETH) => ps.eth_price,
-                        _ => ps.btc_price,
-                    }
+                    (ps.btc_price, ps.eth_price)
                 };
                 
-                let exits = state.check_exits(current_crypto);
+                let exits = state.check_exits_multi(btc_price, eth_price);
                 for (pos, reason, pnl_pct) in exits {
                     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
                     let hold_duration = pos.entry_time.elapsed();
                     let pnl_usd = pos.size_usd * (pnl_pct / 100.0);
                     
+                    let asset_name = match pos.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
+                    let current_price = match pos.asset { CryptoAsset::BTC => btc_price, CryptoAsset::ETH => eth_price };
+                    
                     println!("💰 [EXIT] {} - {}", reason, timestamp);
                     println!("      Market: {}", pos.market_description);
+                    println!("      Asset: {}", asset_name);
                     println!("      Direction: {}", if pos.direction_up { "YES (UP)" } else { "NO (DOWN)" });
-                    println!("      Entry: ${:.2} @ {:.2}¢ | Crypto was ${:.2}", 
-                        pos.size_usd, pos.entry_price * 100.0, pos.entry_btc_price);
-                    println!("      Exit: Crypto now ${:.2} | Hold time: {:.1}s", 
-                        current_crypto, hold_duration.as_secs_f64());
+                    println!("      Entry: ${:.2} @ {:.2}¢ | {} was ${:.2}", 
+                        pos.size_usd, pos.entry_price * 100.0, asset_name, pos.entry_crypto_price);
+                    println!("      Exit: {} now ${:.2} | Hold time: {:.1}s", 
+                        asset_name, current_price, hold_duration.as_secs_f64());
                     println!("      P&L: {:+.1}% (${:+.2})", pnl_pct, pnl_usd);
                     println!("      ---");
                     
@@ -437,53 +480,63 @@ async fn main() -> Result<()> {
             }
             
             _ = market_refresh_interval.tick() => {
-                // Always search for the best available market (markets change quickly)
-                let current_distance = active_market.as_ref()
-                    .map(|m| (m.yes_ask - 0.50).abs())
-                    .unwrap_or(f64::MAX);
-                
-                // Refresh current market prices
-                let mut current_valid = false;
-                if let Some(ref mut market) = active_market {
-                    if let Err(e) = update_market_prices(market).await {
-                        println!("⚠️ Market {} no longer active: {}", market.description, e);
-                    } else {
-                        // Check if current market is still undecided
-                        if market.yes_ask >= 0.20 && market.yes_ask <= 0.80 {
-                            current_valid = true;
-                            engine.set_market(market.clone());
-                        } else {
-                            println!("⚠️ Market {} now at {:.0}¢ (too decided)", market.description, market.yes_ask * 100.0);
-                        }
-                    }
-                }
-                
-                // Search for a better market if we don't have one or current is invalid
-                if !current_valid {
-                    let mut best_market: Option<LiveCryptoMarket> = None;
-                    let mut best_distance = current_distance;
+                // MULTI-MARKET: Refresh markets for both BTC and ETH separately
+                if let Ok(markets) = fetch_live_crypto_markets().await {
+                    let mut best_btc: Option<LiveCryptoMarket> = None;
+                    let mut best_btc_dist = f64::MAX;
+                    let mut best_eth: Option<LiveCryptoMarket> = None;
+                    let mut best_eth_dist = f64::MAX;
                     
-                    if let Ok(markets) = fetch_live_crypto_markets().await {
-                        for mut m in markets {
-                            if update_market_prices(&mut m).await.is_ok() {
-                                let yes_price = m.yes_ask;
-                                let distance = (yes_price - 0.50).abs();
-                                // Only consider undecided markets (YES between 20-80¢)
-                                if yes_price >= 0.20 && yes_price <= 0.80 && distance < best_distance {
-                                    best_distance = distance;
-                                    best_market = Some(m);
+                    for mut m in markets {
+                        if update_market_prices(&mut m).await.is_ok() {
+                            let yes_price = m.yes_ask;
+                            let distance = (yes_price - 0.50).abs();
+                            
+                            if yes_price >= 0.20 && yes_price <= 0.80 {
+                                match m.asset {
+                                    CryptoAsset::BTC => {
+                                        if distance < best_btc_dist {
+                                            best_btc_dist = distance;
+                                            best_btc = Some(m);
+                                        }
+                                    }
+                                    CryptoAsset::ETH => {
+                                        if distance < best_eth_dist {
+                                            best_eth_dist = distance;
+                                            best_eth = Some(m);
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                     
-                    if let Some(m) = best_market {
-                        println!("📊 Switched to: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
-                        engine.set_market(m.clone());
-                        engine.reset_interval().await;
-                        active_market = Some(m);
-                    } else if !current_valid {
-                        active_market = None;
+                    // Update BTC market
+                    if let Some(m) = best_btc {
+                        if !engine.has_market(CryptoAsset::BTC) {
+                            println!("📊 [BTC] Found: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                            engine.reset_interval_for_asset(CryptoAsset::BTC).await;
+                        }
+                        engine.set_market_for_asset(m);
+                    } else {
+                        if engine.has_market(CryptoAsset::BTC) {
+                            println!("⚠️ [BTC] No active market available");
+                        }
+                        engine.clear_market_for_asset(CryptoAsset::BTC);
+                    }
+                    
+                    // Update ETH market
+                    if let Some(m) = best_eth {
+                        if !engine.has_market(CryptoAsset::ETH) {
+                            println!("📊 [ETH] Found: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                            engine.reset_interval_for_asset(CryptoAsset::ETH).await;
+                        }
+                        engine.set_market_for_asset(m);
+                    } else {
+                        if engine.has_market(CryptoAsset::ETH) {
+                            println!("⚠️ [ETH] No active market available");
+                        }
+                        engine.clear_market_for_asset(CryptoAsset::ETH);
                     }
                 }
             }

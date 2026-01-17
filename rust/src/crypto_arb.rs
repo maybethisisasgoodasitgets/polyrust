@@ -361,7 +361,11 @@ pub struct ArbSignal {
 pub struct CryptoArbEngine {
     /// Shared price state
     price_state: Arc<RwLock<PriceState>>,
-    /// Current live crypto market info
+    /// Current BTC market (if any)
+    btc_market: Option<LiveCryptoMarket>,
+    /// Current ETH market (if any)
+    eth_market: Option<LiveCryptoMarket>,
+    /// Legacy single market field (for backward compatibility)
     market: Option<LiveCryptoMarket>,
     /// Mock mode (don't execute real trades)
     mock_mode: bool,
@@ -375,6 +379,8 @@ impl CryptoArbEngine {
     pub fn new(mock_mode: bool, max_position_usd: f64, min_position_usd: f64) -> Self {
         Self {
             price_state: Arc::new(RwLock::new(PriceState::default())),
+            btc_market: None,
+            eth_market: None,
             market: None,
             mock_mode,
             max_position_usd,
@@ -387,9 +393,41 @@ impl CryptoArbEngine {
         self.price_state.clone()
     }
     
-    /// Set the current live crypto market to monitor
+    /// Set the current live crypto market to monitor (legacy single-market mode)
     pub fn set_market(&mut self, market: LiveCryptoMarket) {
         self.market = Some(market);
+    }
+    
+    /// Set market for a specific asset (multi-market mode)
+    pub fn set_market_for_asset(&mut self, market: LiveCryptoMarket) {
+        match market.asset {
+            CryptoAsset::BTC => self.btc_market = Some(market),
+            CryptoAsset::ETH => self.eth_market = Some(market),
+        }
+    }
+    
+    /// Clear market for a specific asset
+    pub fn clear_market_for_asset(&mut self, asset: CryptoAsset) {
+        match asset {
+            CryptoAsset::BTC => self.btc_market = None,
+            CryptoAsset::ETH => self.eth_market = None,
+        }
+    }
+    
+    /// Get current market for an asset
+    pub fn get_market(&self, asset: CryptoAsset) -> Option<&LiveCryptoMarket> {
+        match asset {
+            CryptoAsset::BTC => self.btc_market.as_ref(),
+            CryptoAsset::ETH => self.eth_market.as_ref(),
+        }
+    }
+    
+    /// Check if we have an active market for an asset
+    pub fn has_market(&self, asset: CryptoAsset) -> bool {
+        match asset {
+            CryptoAsset::BTC => self.btc_market.is_some(),
+            CryptoAsset::ETH => self.eth_market.is_some(),
+        }
     }
     
     /// Check for arbitrage opportunity
@@ -540,6 +578,161 @@ impl CryptoArbEngine {
         state.btc_interval_start_price = state.btc_price;
         state.eth_interval_start_price = state.eth_price;
         state.interval_start_time = Instant::now();
+    }
+    
+    /// Reset interval for a specific asset only
+    pub async fn reset_interval_for_asset(&self, asset: CryptoAsset) {
+        let mut state = self.price_state.write().await;
+        match asset {
+            CryptoAsset::BTC => state.btc_interval_start_price = state.btc_price,
+            CryptoAsset::ETH => state.eth_interval_start_price = state.eth_price,
+        }
+    }
+    
+    /// Check for arbitrage opportunities on ALL active markets (multi-market mode)
+    /// Returns signals for both BTC and ETH if opportunities exist
+    pub async fn check_all_opportunities(&self) -> Vec<ArbSignal> {
+        let mut signals = Vec::new();
+        
+        // Check BTC market
+        if let Some(signal) = self.check_opportunity_for_asset(CryptoAsset::BTC).await {
+            signals.push(signal);
+        }
+        
+        // Check ETH market
+        if let Some(signal) = self.check_opportunity_for_asset(CryptoAsset::ETH).await {
+            signals.push(signal);
+        }
+        
+        signals
+    }
+    
+    /// Check for arbitrage opportunity on a specific asset's market
+    pub async fn check_opportunity_for_asset(&self, asset: CryptoAsset) -> Option<ArbSignal> {
+        let market = match asset {
+            CryptoAsset::BTC => self.btc_market.as_ref()?,
+            CryptoAsset::ETH => self.eth_market.as_ref()?,
+        };
+        
+        let state = self.price_state.read().await;
+        
+        // Need valid prices for the relevant asset
+        let (current_price, interval_start) = match asset {
+            CryptoAsset::BTC => (state.btc_price, state.btc_interval_start_price),
+            CryptoAsset::ETH => (state.eth_price, state.eth_interval_start_price),
+        };
+        
+        if current_price == 0.0 || interval_start == 0.0 {
+            return None;
+        }
+        
+        let change_pct = state.price_change_pct(asset);
+        let abs_change = change_pct.abs();
+        
+        // Market-type-specific minimum price move thresholds
+        let min_move = match market.interval_minutes {
+            5 => 0.05,
+            15 => 0.10,
+            60 => 0.20,
+            240 => 0.30,
+            _ => 0.15,
+        };
+        
+        if abs_change < min_move {
+            return None;
+        }
+        
+        // === MOMENTUM CHECK ===
+        let momentum = state.momentum(asset);
+        let is_up = state.is_up(asset);
+        
+        if !momentum.supports_direction(is_up) {
+            return None;
+        }
+        
+        if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
+            return None;
+        }
+        
+        let (bet_up, token_id, market_ask) = if is_up {
+            (true, market.yes_token_id.clone(), market.yes_ask)
+        } else {
+            (false, market.no_token_id.clone(), market.no_ask)
+        };
+        
+        if market_ask > MAX_BUY_PRICE {
+            return None;
+        }
+        
+        let prob_multiplier = match market.interval_minutes {
+            5 => 8.0,
+            15 => 5.0,
+            60 => 3.0,
+            240 => 2.0,
+            _ => 4.0,
+        };
+        
+        let momentum_boost = if momentum.is_strong() && momentum.is_accelerating {
+            1.2
+        } else if momentum.is_strong() {
+            1.1
+        } else {
+            1.0
+        };
+        
+        let implied_prob = 0.50 + (abs_change * prob_multiplier * momentum_boost).min(45.0) / 100.0;
+        let market_prob = market_ask;
+        let edge_pct = (implied_prob - market_prob) * 100.0;
+        
+        let min_edge = match market.interval_minutes {
+            5 => 0.3,
+            15 => 0.5,
+            60 => 1.0,
+            240 => 1.5,
+            _ => 0.5,
+        };
+        
+        if edge_pct < min_edge {
+            return None;
+        }
+        
+        let confidence_multiplier = match market.interval_minutes {
+            5 => 30.0,
+            15 => 20.0,
+            60 => 15.0,
+            240 => 10.0,
+            _ => 20.0,
+        };
+        
+        let momentum_confidence_boost = if momentum.is_strong() {
+            1.0 + momentum.consistency * 0.5
+        } else {
+            1.0
+        };
+        
+        let confidence = ((abs_change * confidence_multiplier * momentum_confidence_boost).min(100.0)) as u8;
+        
+        let kelly_fraction = (edge_pct / 100.0) / (1.0 - market_ask);
+        let size_multiplier = if momentum.is_strong() && momentum.is_accelerating {
+            1.5
+        } else {
+            1.0
+        };
+        let recommended_size = (self.max_position_usd * kelly_fraction.min(0.25) * size_multiplier)
+            .max(self.min_position_usd)
+            .min(self.max_position_usd);
+        
+        Some(ArbSignal {
+            bet_up,
+            token_id,
+            buy_price: market_ask,
+            edge_pct,
+            crypto_price: current_price,
+            asset,
+            price_change_pct: change_pct,
+            confidence,
+            recommended_size_usd: recommended_size,
+        })
     }
 }
 
