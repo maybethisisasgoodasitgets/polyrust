@@ -150,8 +150,8 @@ impl TradingState {
     }
     
     /// Check positions for exit conditions and return positions to close
-    /// Now takes both BTC and ETH prices for multi-asset support
-    fn check_exits_multi(&mut self, btc_price: f64, eth_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
+    /// Takes prices for all 4 assets for multi-asset support
+    fn check_exits_multi(&mut self, btc_price: f64, eth_price: f64, sol_price: f64, xrp_price: f64) -> Vec<(OpenPosition, &'static str, f64)> {
         let mut exits = Vec::new();
         let mut remaining = Vec::new();
         
@@ -163,6 +163,8 @@ impl TradingState {
             let current_crypto_price = match pos.asset {
                 CryptoAsset::BTC => btc_price,
                 CryptoAsset::ETH => eth_price,
+                CryptoAsset::SOL => sol_price,
+                CryptoAsset::XRP => xrp_price,
             };
             
             // Calculate current P&L based on crypto price movement since entry
@@ -259,23 +261,21 @@ async fn main() -> Result<()> {
         cfg.min_position_usd,
     );
     
-    // Start Binance price feeds for both BTC and ETH
-    println!("📡 Starting Binance BTC + ETH price feeds...");
+    // Start Binance price feeds for BTC, ETH, SOL, and XRP
+    println!("📡 Starting Binance BTC + ETH + SOL + XRP price feeds...");
     let price_state = engine.price_state();
     let _binance_handle = spawn_binance_feed(price_state.clone());
     
-    // Wait for first prices from both feeds
+    // Wait for first prices from all feeds
     println!("⏳ Waiting for initial prices...");
     loop {
         let state = price_state.read().await;
-        if state.btc_price > 0.0 && state.eth_price > 0.0 {
+        if state.btc_price > 0.0 && state.eth_price > 0.0 && state.sol_price > 0.0 && state.xrp_price > 0.0 {
             println!("✅ Got initial BTC price: ${:.2}", state.btc_price);
             println!("✅ Got initial ETH price: ${:.2}", state.eth_price);
+            println!("✅ Got initial SOL price: ${:.2}", state.sol_price);
+            println!("✅ Got initial XRP price: ${:.4}", state.xrp_price);
             break;
-        } else if state.btc_price > 0.0 {
-            // BTC ready, still waiting for ETH
-        } else if state.eth_price > 0.0 {
-            // ETH ready, still waiting for BTC
         }
         drop(state);
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -291,16 +291,25 @@ async fn main() -> Result<()> {
     } else {
         println!("✅ Found {} potential crypto markets", markets.len());
         for (i, m) in markets.iter().enumerate() {
-            let asset_str = match m.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
+            let asset_str = match m.asset { 
+                CryptoAsset::BTC => "BTC", 
+                CryptoAsset::ETH => "ETH",
+                CryptoAsset::SOL => "SOL",
+                CryptoAsset::XRP => "XRP",
+            };
             println!("   {}. [{}] {}", i + 1, asset_str, m.description);
         }
     }
     
-    // Find best market for EACH asset (BTC and ETH separately)
+    // Find best market for EACH asset (BTC, ETH, SOL, XRP separately)
     let mut best_btc_market: Option<LiveCryptoMarket> = None;
     let mut best_btc_distance = f64::MAX;
     let mut best_eth_market: Option<LiveCryptoMarket> = None;
     let mut best_eth_distance = f64::MAX;
+    let mut best_sol_market: Option<LiveCryptoMarket> = None;
+    let mut best_sol_distance = f64::MAX;
+    let mut best_xrp_market: Option<LiveCryptoMarket> = None;
+    let mut best_xrp_distance = f64::MAX;
     
     for mut market in markets {
         // Update market prices from CLOB
@@ -312,7 +321,12 @@ async fn main() -> Result<()> {
         let yes_price = market.yes_ask;
         let distance_from_50 = (yes_price - 0.50).abs();
         
-        let asset_str = match market.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
+        let asset_str = match market.asset { 
+            CryptoAsset::BTC => "BTC", 
+            CryptoAsset::ETH => "ETH",
+            CryptoAsset::SOL => "SOL",
+            CryptoAsset::XRP => "XRP",
+        };
         println!("   [{}] {} - Yes: {:.2}¢, No: {:.2}¢ (distance: {:.2})", 
             asset_str, market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
         
@@ -331,13 +345,25 @@ async fn main() -> Result<()> {
                         best_eth_market = Some(market);
                     }
                 }
+                CryptoAsset::SOL => {
+                    if distance_from_50 < best_sol_distance {
+                        best_sol_distance = distance_from_50;
+                        best_sol_market = Some(market);
+                    }
+                }
+                CryptoAsset::XRP => {
+                    if distance_from_50 < best_xrp_distance {
+                        best_xrp_distance = distance_from_50;
+                        best_xrp_market = Some(market);
+                    }
+                }
             }
         }
     }
     
     // Set up multi-market tracking
     println!();
-    println!("📊 MULTI-MARKET MODE:");
+    println!("📊 MULTI-MARKET MODE (4 assets):");
     if let Some(ref market) = best_btc_market {
         println!("   🟠 BTC: {} - Yes: {:.2}¢", market.description, market.yes_ask * 100.0);
         engine.set_market_for_asset(market.clone());
@@ -350,9 +376,21 @@ async fn main() -> Result<()> {
     } else {
         println!("   🔵 ETH: No active market found");
     }
+    if let Some(ref market) = best_sol_market {
+        println!("   🟣 SOL: {} - Yes: {:.2}¢", market.description, market.yes_ask * 100.0);
+        engine.set_market_for_asset(market.clone());
+    } else {
+        println!("   🟣 SOL: No active market found");
+    }
+    if let Some(ref market) = best_xrp_market {
+        println!("   ⚪ XRP: {} - Yes: {:.2}¢", market.description, market.yes_ask * 100.0);
+        engine.set_market_for_asset(market.clone());
+    } else {
+        println!("   ⚪ XRP: No active market found");
+    }
     
     // Keep legacy single-market for backward compatibility
-    let active_market = best_btc_market.clone().or(best_eth_market.clone());
+    let _active_market = best_btc_market.clone().or(best_eth_market.clone()).or(best_sol_market.clone()).or(best_xrp_market.clone());
     
     // Trading state
     let mut state = TradingState::new();
@@ -426,19 +464,29 @@ async fn main() -> Result<()> {
                 }
                 
                 // Check for exit conditions on open positions (multi-asset)
-                let (btc_price, eth_price) = {
+                let (btc_price, eth_price, sol_price, xrp_price) = {
                     let ps = price_state.read().await;
-                    (ps.btc_price, ps.eth_price)
+                    (ps.btc_price, ps.eth_price, ps.sol_price, ps.xrp_price)
                 };
                 
-                let exits = state.check_exits_multi(btc_price, eth_price);
+                let exits = state.check_exits_multi(btc_price, eth_price, sol_price, xrp_price);
                 for (pos, reason, pnl_pct) in exits {
                     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
                     let hold_duration = pos.entry_time.elapsed();
                     let pnl_usd = pos.size_usd * (pnl_pct / 100.0);
                     
-                    let asset_name = match pos.asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH" };
-                    let current_price = match pos.asset { CryptoAsset::BTC => btc_price, CryptoAsset::ETH => eth_price };
+                    let asset_name = match pos.asset { 
+                        CryptoAsset::BTC => "BTC", 
+                        CryptoAsset::ETH => "ETH",
+                        CryptoAsset::SOL => "SOL",
+                        CryptoAsset::XRP => "XRP",
+                    };
+                    let current_price = match pos.asset { 
+                        CryptoAsset::BTC => btc_price, 
+                        CryptoAsset::ETH => eth_price,
+                        CryptoAsset::SOL => sol_price,
+                        CryptoAsset::XRP => xrp_price,
+                    };
                     
                     println!("💰 [EXIT] {} - {}", reason, timestamp);
                     println!("      Market: {}", pos.market_description);
@@ -456,12 +504,16 @@ async fn main() -> Result<()> {
             }
             
             _ = price_log_interval.tick() => {
-                // Log current state for both BTC and ETH
+                // Log current state for all 4 assets
                 let ps = price_state.read().await;
                 let btc_change = ps.btc_change_pct();
                 let eth_change = ps.eth_change_pct();
+                let sol_change = ps.sol_change_pct();
+                let xrp_change = ps.xrp_change_pct();
                 let btc_dir = if btc_change >= 0.0 { "⬆️" } else { "⬇️" };
                 let eth_dir = if eth_change >= 0.0 { "⬆️" } else { "⬇️" };
+                let sol_dir = if sol_change >= 0.0 { "⬆️" } else { "⬇️" };
+                let xrp_dir = if xrp_change >= 0.0 { "⬆️" } else { "⬇️" };
                 let open_pos = state.open_positions.len();
                 let pnl_str = if state.estimated_pnl != 0.0 {
                     format!(" | P&L: ${:+.2}", state.estimated_pnl)
@@ -469,9 +521,11 @@ async fn main() -> Result<()> {
                     String::new()
                 };
                 println!(
-                    "📈 BTC ${:.2} {}{:+.3}% | ETH ${:.2} {}{:+.3}% | Trades: {} | Open: {}{} | {}",
+                    "📈 BTC ${:.0}{}{:+.2}% | ETH ${:.0}{}{:+.2}% | SOL ${:.1}{}{:+.2}% | XRP ${:.3}{}{:+.2}% | T:{} O:{}{} | {}",
                     ps.btc_price, btc_dir, btc_change,
                     ps.eth_price, eth_dir, eth_change,
+                    ps.sol_price, sol_dir, sol_change,
+                    ps.xrp_price, xrp_dir, xrp_change,
                     state.trades_executed,
                     open_pos,
                     pnl_str,
@@ -480,12 +534,16 @@ async fn main() -> Result<()> {
             }
             
             _ = market_refresh_interval.tick() => {
-                // MULTI-MARKET: Refresh markets for both BTC and ETH separately
+                // MULTI-MARKET: Refresh markets for all 4 assets
                 if let Ok(markets) = fetch_live_crypto_markets().await {
                     let mut best_btc: Option<LiveCryptoMarket> = None;
                     let mut best_btc_dist = f64::MAX;
                     let mut best_eth: Option<LiveCryptoMarket> = None;
                     let mut best_eth_dist = f64::MAX;
+                    let mut best_sol: Option<LiveCryptoMarket> = None;
+                    let mut best_sol_dist = f64::MAX;
+                    let mut best_xrp: Option<LiveCryptoMarket> = None;
+                    let mut best_xrp_dist = f64::MAX;
                     
                     for mut m in markets {
                         if update_market_prices(&mut m).await.is_ok() {
@@ -504,6 +562,18 @@ async fn main() -> Result<()> {
                                         if distance < best_eth_dist {
                                             best_eth_dist = distance;
                                             best_eth = Some(m);
+                                        }
+                                    }
+                                    CryptoAsset::SOL => {
+                                        if distance < best_sol_dist {
+                                            best_sol_dist = distance;
+                                            best_sol = Some(m);
+                                        }
+                                    }
+                                    CryptoAsset::XRP => {
+                                        if distance < best_xrp_dist {
+                                            best_xrp_dist = distance;
+                                            best_xrp = Some(m);
                                         }
                                     }
                                 }
@@ -537,6 +607,34 @@ async fn main() -> Result<()> {
                             println!("⚠️ [ETH] No active market available");
                         }
                         engine.clear_market_for_asset(CryptoAsset::ETH);
+                    }
+                    
+                    // Update SOL market
+                    if let Some(m) = best_sol {
+                        if !engine.has_market(CryptoAsset::SOL) {
+                            println!("📊 [SOL] Found: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                            engine.reset_interval_for_asset(CryptoAsset::SOL).await;
+                        }
+                        engine.set_market_for_asset(m);
+                    } else {
+                        if engine.has_market(CryptoAsset::SOL) {
+                            println!("⚠️ [SOL] No active market available");
+                        }
+                        engine.clear_market_for_asset(CryptoAsset::SOL);
+                    }
+                    
+                    // Update XRP market
+                    if let Some(m) = best_xrp {
+                        if !engine.has_market(CryptoAsset::XRP) {
+                            println!("📊 [XRP] Found: {} - Yes: {:.2}¢", m.description, m.yes_ask * 100.0);
+                            engine.reset_interval_for_asset(CryptoAsset::XRP).await;
+                        }
+                        engine.set_market_for_asset(m);
+                    } else {
+                        if engine.has_market(CryptoAsset::XRP) {
+                            println!("⚠️ [XRP] No active market available");
+                        }
+                        engine.clear_market_for_asset(CryptoAsset::XRP);
                     }
                 }
             }

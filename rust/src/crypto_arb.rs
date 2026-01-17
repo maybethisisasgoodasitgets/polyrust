@@ -36,6 +36,12 @@ pub const BINANCE_BTC_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@t
 /// Binance WebSocket URL for ETH/USDT trades
 pub const BINANCE_ETH_WS_URL: &str = "wss://stream.binance.com:9443/ws/ethusdt@trade";
 
+/// Binance WebSocket URL for SOL/USDT trades
+pub const BINANCE_SOL_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@trade";
+
+/// Binance WebSocket URL for XRP/USDT trades
+pub const BINANCE_XRP_WS_URL: &str = "wss://stream.binance.com:9443/ws/xrpusdt@trade";
+
 /// Binance WebSocket URL for BTC/USDT ticker (more frequent updates)
 pub const BINANCE_TICKER_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@ticker";
 
@@ -44,6 +50,8 @@ pub const BINANCE_TICKER_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusd
 pub enum CryptoAsset {
     BTC,
     ETH,
+    SOL,
+    XRP,
 }
 
 // ============================================================================
@@ -63,6 +71,14 @@ pub struct PriceState {
     pub eth_price: f64,
     /// ETH price at the start of the current Polymarket interval
     pub eth_interval_start_price: f64,
+    /// Current SOL price from Binance
+    pub sol_price: f64,
+    /// SOL price at the start of the current Polymarket interval
+    pub sol_interval_start_price: f64,
+    /// Current XRP price from Binance
+    pub xrp_price: f64,
+    /// XRP price at the start of the current Polymarket interval
+    pub xrp_interval_start_price: f64,
     /// Timestamp of last price update
     pub last_update: Instant,
     /// Timestamp of interval start
@@ -71,6 +87,10 @@ pub struct PriceState {
     pub btc_price_history: Vec<(f64, Instant)>,
     /// Recent ETH prices for momentum calculation (newest last)
     pub eth_price_history: Vec<(f64, Instant)>,
+    /// Recent SOL prices for momentum calculation (newest last)
+    pub sol_price_history: Vec<(f64, Instant)>,
+    /// Recent XRP prices for momentum calculation (newest last)
+    pub xrp_price_history: Vec<(f64, Instant)>,
 }
 
 impl Default for PriceState {
@@ -80,10 +100,16 @@ impl Default for PriceState {
             btc_interval_start_price: 0.0,
             eth_price: 0.0,
             eth_interval_start_price: 0.0,
+            sol_price: 0.0,
+            sol_interval_start_price: 0.0,
+            xrp_price: 0.0,
+            xrp_interval_start_price: 0.0,
             last_update: Instant::now(),
             interval_start_time: Instant::now(),
             btc_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
             eth_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
+            sol_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
+            xrp_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
         }
     }
 }
@@ -105,11 +131,29 @@ impl PriceState {
         ((self.eth_price - self.eth_interval_start_price) / self.eth_interval_start_price) * 100.0
     }
     
+    /// Calculate SOL price change percentage since interval start
+    pub fn sol_change_pct(&self) -> f64 {
+        if self.sol_interval_start_price == 0.0 {
+            return 0.0;
+        }
+        ((self.sol_price - self.sol_interval_start_price) / self.sol_interval_start_price) * 100.0
+    }
+    
+    /// Calculate XRP price change percentage since interval start
+    pub fn xrp_change_pct(&self) -> f64 {
+        if self.xrp_interval_start_price == 0.0 {
+            return 0.0;
+        }
+        ((self.xrp_price - self.xrp_interval_start_price) / self.xrp_interval_start_price) * 100.0
+    }
+    
     /// Get price change for a specific asset
     pub fn price_change_pct(&self, asset: CryptoAsset) -> f64 {
         match asset {
             CryptoAsset::BTC => self.btc_change_pct(),
             CryptoAsset::ETH => self.eth_change_pct(),
+            CryptoAsset::SOL => self.sol_change_pct(),
+            CryptoAsset::XRP => self.xrp_change_pct(),
         }
     }
     
@@ -118,6 +162,8 @@ impl PriceState {
         match asset {
             CryptoAsset::BTC => self.btc_price,
             CryptoAsset::ETH => self.eth_price,
+            CryptoAsset::SOL => self.sol_price,
+            CryptoAsset::XRP => self.xrp_price,
         }
     }
     
@@ -126,6 +172,8 @@ impl PriceState {
         match asset {
             CryptoAsset::BTC => self.btc_price > self.btc_interval_start_price,
             CryptoAsset::ETH => self.eth_price > self.eth_interval_start_price,
+            CryptoAsset::SOL => self.sol_price > self.sol_interval_start_price,
+            CryptoAsset::XRP => self.xrp_price > self.xrp_interval_start_price,
         }
     }
     
@@ -134,6 +182,8 @@ impl PriceState {
         let history = match asset {
             CryptoAsset::BTC => &mut self.btc_price_history,
             CryptoAsset::ETH => &mut self.eth_price_history,
+            CryptoAsset::SOL => &mut self.sol_price_history,
+            CryptoAsset::XRP => &mut self.xrp_price_history,
         };
         
         history.push((price, Instant::now()));
@@ -151,6 +201,8 @@ impl PriceState {
         let history = match asset {
             CryptoAsset::BTC => &self.btc_price_history,
             CryptoAsset::ETH => &self.eth_price_history,
+            CryptoAsset::SOL => &self.sol_price_history,
+            CryptoAsset::XRP => &self.xrp_price_history,
         };
         
         if history.len() < 3 {
@@ -365,6 +417,10 @@ pub struct CryptoArbEngine {
     btc_market: Option<LiveCryptoMarket>,
     /// Current ETH market (if any)
     eth_market: Option<LiveCryptoMarket>,
+    /// Current SOL market (if any)
+    sol_market: Option<LiveCryptoMarket>,
+    /// Current XRP market (if any)
+    xrp_market: Option<LiveCryptoMarket>,
     /// Legacy single market field (for backward compatibility)
     market: Option<LiveCryptoMarket>,
     /// Mock mode (don't execute real trades)
@@ -381,6 +437,8 @@ impl CryptoArbEngine {
             price_state: Arc::new(RwLock::new(PriceState::default())),
             btc_market: None,
             eth_market: None,
+            sol_market: None,
+            xrp_market: None,
             market: None,
             mock_mode,
             max_position_usd,
@@ -403,6 +461,8 @@ impl CryptoArbEngine {
         match market.asset {
             CryptoAsset::BTC => self.btc_market = Some(market),
             CryptoAsset::ETH => self.eth_market = Some(market),
+            CryptoAsset::SOL => self.sol_market = Some(market),
+            CryptoAsset::XRP => self.xrp_market = Some(market),
         }
     }
     
@@ -411,6 +471,8 @@ impl CryptoArbEngine {
         match asset {
             CryptoAsset::BTC => self.btc_market = None,
             CryptoAsset::ETH => self.eth_market = None,
+            CryptoAsset::SOL => self.sol_market = None,
+            CryptoAsset::XRP => self.xrp_market = None,
         }
     }
     
@@ -419,6 +481,8 @@ impl CryptoArbEngine {
         match asset {
             CryptoAsset::BTC => self.btc_market.as_ref(),
             CryptoAsset::ETH => self.eth_market.as_ref(),
+            CryptoAsset::SOL => self.sol_market.as_ref(),
+            CryptoAsset::XRP => self.xrp_market.as_ref(),
         }
     }
     
@@ -427,6 +491,8 @@ impl CryptoArbEngine {
         match asset {
             CryptoAsset::BTC => self.btc_market.is_some(),
             CryptoAsset::ETH => self.eth_market.is_some(),
+            CryptoAsset::SOL => self.sol_market.is_some(),
+            CryptoAsset::XRP => self.xrp_market.is_some(),
         }
     }
     
@@ -440,6 +506,8 @@ impl CryptoArbEngine {
         let (current_price, interval_start) = match asset {
             CryptoAsset::BTC => (state.btc_price, state.btc_interval_start_price),
             CryptoAsset::ETH => (state.eth_price, state.eth_interval_start_price),
+            CryptoAsset::SOL => (state.sol_price, state.sol_interval_start_price),
+            CryptoAsset::XRP => (state.xrp_price, state.xrp_interval_start_price),
         };
         
         if current_price == 0.0 || interval_start == 0.0 {
@@ -572,11 +640,13 @@ impl CryptoArbEngine {
         })
     }
     
-    /// Reset interval for both assets (call when new Polymarket interval starts)
+    /// Reset interval for all assets (call when new Polymarket interval starts)
     pub async fn reset_interval(&self) {
         let mut state = self.price_state.write().await;
         state.btc_interval_start_price = state.btc_price;
         state.eth_interval_start_price = state.eth_price;
+        state.sol_interval_start_price = state.sol_price;
+        state.xrp_interval_start_price = state.xrp_price;
         state.interval_start_time = Instant::now();
     }
     
@@ -586,11 +656,13 @@ impl CryptoArbEngine {
         match asset {
             CryptoAsset::BTC => state.btc_interval_start_price = state.btc_price,
             CryptoAsset::ETH => state.eth_interval_start_price = state.eth_price,
+            CryptoAsset::SOL => state.sol_interval_start_price = state.sol_price,
+            CryptoAsset::XRP => state.xrp_interval_start_price = state.xrp_price,
         }
     }
     
     /// Check for arbitrage opportunities on ALL active markets (multi-market mode)
-    /// Returns signals for both BTC and ETH if opportunities exist
+    /// Returns signals for BTC, ETH, SOL, and XRP if opportunities exist
     pub async fn check_all_opportunities(&self) -> Vec<ArbSignal> {
         let mut signals = Vec::new();
         
@@ -604,6 +676,16 @@ impl CryptoArbEngine {
             signals.push(signal);
         }
         
+        // Check SOL market
+        if let Some(signal) = self.check_opportunity_for_asset(CryptoAsset::SOL).await {
+            signals.push(signal);
+        }
+        
+        // Check XRP market
+        if let Some(signal) = self.check_opportunity_for_asset(CryptoAsset::XRP).await {
+            signals.push(signal);
+        }
+        
         signals
     }
     
@@ -612,6 +694,8 @@ impl CryptoArbEngine {
         let market = match asset {
             CryptoAsset::BTC => self.btc_market.as_ref()?,
             CryptoAsset::ETH => self.eth_market.as_ref()?,
+            CryptoAsset::SOL => self.sol_market.as_ref()?,
+            CryptoAsset::XRP => self.xrp_market.as_ref()?,
         };
         
         let state = self.price_state.read().await;
@@ -620,6 +704,8 @@ impl CryptoArbEngine {
         let (current_price, interval_start) = match asset {
             CryptoAsset::BTC => (state.btc_price, state.btc_interval_start_price),
             CryptoAsset::ETH => (state.eth_price, state.eth_interval_start_price),
+            CryptoAsset::SOL => (state.sol_price, state.sol_interval_start_price),
+            CryptoAsset::XRP => (state.xrp_price, state.xrp_interval_start_price),
         };
         
         if current_price == 0.0 || interval_start == 0.0 {
@@ -740,11 +826,13 @@ impl CryptoArbEngine {
 // Binance Price Feed
 // ============================================================================
 
-/// Spawn a task that maintains WebSocket connections to Binance for both BTC and ETH
+/// Spawn a task that maintains WebSocket connections to Binance for BTC, ETH, SOL, and XRP
 /// and updates the shared price state
 pub fn spawn_binance_feed(price_state: Arc<RwLock<PriceState>>) -> tokio::task::JoinHandle<()> {
     let btc_state = price_state.clone();
     let eth_state = price_state.clone();
+    let sol_state = price_state.clone();
+    let xrp_state = price_state.clone();
     
     // Spawn BTC feed
     tokio::spawn(async move {
@@ -764,6 +852,26 @@ pub fn spawn_binance_feed(price_state: Arc<RwLock<PriceState>>) -> tokio::task::
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
+    });
+    
+    // Spawn SOL feed
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = run_binance_feed(sol_state.clone(), CryptoAsset::SOL).await {
+                eprintln!("⚠️ Binance SOL feed error: {}. Reconnecting in 3s...", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    });
+    
+    // Spawn XRP feed
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = run_binance_feed(xrp_state.clone(), CryptoAsset::XRP).await {
+                eprintln!("⚠️ Binance XRP feed error: {}. Reconnecting in 3s...", e);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
     })
 }
 
@@ -771,9 +879,13 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAss
     let ws_url = match asset {
         CryptoAsset::BTC => BINANCE_BTC_WS_URL,
         CryptoAsset::ETH => BINANCE_ETH_WS_URL,
+        CryptoAsset::SOL => BINANCE_SOL_WS_URL,
+        CryptoAsset::XRP => BINANCE_XRP_WS_URL,
     };
     let asset_name = match asset {
         CryptoAsset::BTC => "BTC",
+        CryptoAsset::SOL => "SOL",
+        CryptoAsset::XRP => "XRP",
         CryptoAsset::ETH => "ETH",
     };
     
@@ -795,18 +907,28 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAss
                         
                         match asset {
                             CryptoAsset::BTC => {
-                                // Initialize interval start price if not set
                                 if state.btc_interval_start_price == 0.0 {
                                     state.btc_interval_start_price = price;
                                 }
                                 state.btc_price = price;
                             }
                             CryptoAsset::ETH => {
-                                // Initialize interval start price if not set
                                 if state.eth_interval_start_price == 0.0 {
                                     state.eth_interval_start_price = price;
                                 }
                                 state.eth_price = price;
+                            }
+                            CryptoAsset::SOL => {
+                                if state.sol_interval_start_price == 0.0 {
+                                    state.sol_interval_start_price = price;
+                                }
+                                state.sol_price = price;
+                            }
+                            CryptoAsset::XRP => {
+                                if state.xrp_interval_start_price == 0.0 {
+                                    state.xrp_interval_start_price = price;
+                                }
+                                state.xrp_price = price;
                             }
                         }
                         // Record price sample for momentum calculation
@@ -903,11 +1025,34 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 || slug.contains("ethereum-hit")
                 || slug.contains("eth-hit");
             
+            // Check for SOL markets: 15m up/down
+            let is_sol_updown = slug.starts_with("sol-updown-15m-") 
+                || slug.starts_with("sol-updown-5m-")
+                || slug.starts_with("sol-updown-4h-")
+                || slug.contains("solana-up-or-down");
+            let is_sol_price_target = slug.starts_with("solana-above-") 
+                || slug.starts_with("solana-below-")
+                || slug.contains("solana-hit")
+                || slug.contains("sol-hit");
+            
+            // Check for XRP markets: 15m up/down
+            let is_xrp_updown = slug.starts_with("xrp-updown-15m-") 
+                || slug.starts_with("xrp-updown-5m-")
+                || slug.starts_with("xrp-updown-4h-")
+                || slug.contains("xrp-up-or-down");
+            let is_xrp_price_target = slug.starts_with("xrp-above-") 
+                || slug.starts_with("xrp-below-")
+                || slug.contains("xrp-hit");
+            
             // Determine which asset this market is for
             let asset = if is_btc_updown || is_btc_price_target {
                 Some(CryptoAsset::BTC)
             } else if is_eth_updown || is_eth_price_target {
                 Some(CryptoAsset::ETH)
+            } else if is_sol_updown || is_sol_price_target {
+                Some(CryptoAsset::SOL)
+            } else if is_xrp_updown || is_xrp_price_target {
+                Some(CryptoAsset::XRP)
             } else {
                 None
             };
@@ -932,7 +1077,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                     "15m"
                 } else if slug.contains("-4h-") {
                     "4h"
-                } else if is_btc_price_target || is_eth_price_target {
+                } else if is_btc_price_target || is_eth_price_target || is_sol_price_target || is_xrp_price_target {
                     "price-target"
                 } else {
                     "daily"
@@ -940,6 +1085,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 let asset_name = match asset {
                     CryptoAsset::BTC => "BTC",
                     CryptoAsset::ETH => "ETH",
+                    CryptoAsset::SOL => "SOL",
+                    CryptoAsset::XRP => "XRP",
                 };
                 println!("   ✅ Found {} {} market: {}", asset_name, market_type, slug);
                 
