@@ -154,6 +154,34 @@ See [Features Overview](docs/04_FEATURES.md) for feature details and [Strategy G
 - ✅ Live market detection
 - ✅ Tiered execution based on trade size
 
+### 6.1 Crypto Arbitrage Bot
+
+The `crypto_arb_bot` binary provides latency arbitrage on Polymarket's crypto markets (BTC/ETH Up or Down).
+
+**Momentum Detection:**
+
+| Check | Action |
+|-------|--------|
+| **Direction mismatch** | Skip if momentum going opposite way |
+| **Weak & decelerating** | Skip if momentum fading (likely reversal) |
+| **Strong & accelerating** | +20% edge boost, +50% position size |
+| **Strong & consistent** | Up to +50% confidence boost |
+
+**How It Works:**
+- Tracks last 10 price samples from Binance WebSocket feed
+- Calculates if price is accelerating or decelerating
+- Measures consistency (are all moves in same direction?)
+- Only trades when momentum **supports** the price move
+
+**Run the crypto arb bot:**
+```bash
+# Mock trading (paper trading)
+MOCK_TRADING=true cargo run --release --bin crypto_arb_bot
+
+# Live trading
+MOCK_TRADING=false cargo run --release --bin crypto_arb_bot
+```
+
 ## 7. Advanced Usage
 
 ### 7.1 Running Different Modes
