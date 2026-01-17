@@ -57,10 +57,52 @@ Main bot executable with:
 
 ---
 
-## Commit History (33 commits)
+## Supported Assets
+
+| Asset | WebSocket Feed | Market Slugs |
+|-------|----------------|--------------|
+| 🟠 **BTC** | `btcusdt@trade` | `btc-updown-5m-`, `btc-updown-15m-`, `btc-updown-4h-` |
+| 🔵 **ETH** | `ethusdt@trade` | `eth-updown-5m-`, `eth-updown-15m-`, `eth-updown-4h-` |
+| 🟣 **SOL** | `solusdt@trade` | `sol-updown-15m-`, `sol-updown-5m-`, `sol-updown-4h-` |
+| ⚪ **XRP** | `xrpusdt@trade` | `xrp-updown-15m-`, `xrp-updown-5m-`, `xrp-updown-4h-` |
+
+---
+
+## Example Output
+
+```
+📡 Starting Binance BTC + ETH + SOL + XRP price feeds...
+✅ Got initial BTC price: $95464.97
+✅ Got initial ETH price: $3316.33
+✅ Got initial SOL price: $187.45
+✅ Got initial XRP price: $2.4521
+
+📊 MULTI-MARKET MODE (4 assets):
+   🟠 BTC: Bitcoin Up or Down - 12:00PM-12:15PM ET - Yes: 50.00¢
+   🔵 ETH: Ethereum Up or Down - 12:00PM-12:15PM ET - Yes: 50.00¢
+   🟣 SOL: Solana Up or Down - 12:00PM-12:15PM ET - Yes: 50.00¢
+   ⚪ XRP: XRP Up or Down - 12:00PM-12:15PM ET - Yes: 50.00¢
+
+🎯 Monitoring for arbitrage opportunities...
+
+📈 BTC $95464⬆️+0.05% | ETH $3316⬆️+0.03% | SOL $187.4⬆️+0.08% | XRP $2.452⬇️-0.02% | T:0 O:0 | MOCK
+
+🎰 SIGNAL: ⬆️ UP | BTC $95500.12 (+0.08%) | Buy @ 50.00¢ | Edge: 1.2% | Conf: 45%
+   📝 [MOCK TRADE] 2026-01-17 19:06:00 UTC
+      Market: Bitcoin Up or Down - 12:00PM-12:15PM ET (15m)
+      Asset: BTC
+      Direction: BUY YES (UP)
+      Position Size: $5.00
+```
+
+---
+
+## Commit History (35 commits)
 
 | Commit | Description |
 |--------|-------------|
+| `9c83594` | Update CHANGELOG with SOL and XRP support |
+| `f293c5d` | Add SOL and XRP 15-min market support (4 assets total) |
 | `5be55fb` | Add multi-market trading docs to README |
 | `00ccbb9` | Add multi-market trading: trade BTC and ETH simultaneously |
 | `a6389b2` | Add momentum detection docs to README |
