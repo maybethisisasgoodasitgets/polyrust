@@ -50,6 +50,9 @@ pub enum CryptoAsset {
 // Price State
 // ============================================================================
 
+/// Number of price samples to keep for momentum calculation
+const MOMENTUM_WINDOW_SIZE: usize = 10;
+
 #[derive(Debug, Clone)]
 pub struct PriceState {
     /// Current BTC price from Binance
@@ -64,6 +67,10 @@ pub struct PriceState {
     pub last_update: Instant,
     /// Timestamp of interval start
     pub interval_start_time: Instant,
+    /// Recent BTC prices for momentum calculation (newest last)
+    pub btc_price_history: Vec<(f64, Instant)>,
+    /// Recent ETH prices for momentum calculation (newest last)
+    pub eth_price_history: Vec<(f64, Instant)>,
 }
 
 impl Default for PriceState {
@@ -75,6 +82,8 @@ impl Default for PriceState {
             eth_interval_start_price: 0.0,
             last_update: Instant::now(),
             interval_start_time: Instant::now(),
+            btc_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
+            eth_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
         }
     }
 }
@@ -119,6 +128,144 @@ impl PriceState {
             CryptoAsset::ETH => self.eth_price > self.eth_interval_start_price,
         }
     }
+    
+    /// Add a price sample to history for momentum calculation
+    pub fn add_price_sample(&mut self, asset: CryptoAsset, price: f64) {
+        let history = match asset {
+            CryptoAsset::BTC => &mut self.btc_price_history,
+            CryptoAsset::ETH => &mut self.eth_price_history,
+        };
+        
+        history.push((price, Instant::now()));
+        
+        // Keep only the last N samples
+        if history.len() > MOMENTUM_WINDOW_SIZE {
+            history.remove(0);
+        }
+    }
+    
+    /// Calculate momentum score for an asset
+    /// Returns a value between -1.0 (strong downward) and 1.0 (strong upward)
+    /// Also returns whether momentum is accelerating
+    pub fn momentum(&self, asset: CryptoAsset) -> MomentumSignal {
+        let history = match asset {
+            CryptoAsset::BTC => &self.btc_price_history,
+            CryptoAsset::ETH => &self.eth_price_history,
+        };
+        
+        if history.len() < 3 {
+            return MomentumSignal::default();
+        }
+        
+        // Calculate price changes between consecutive samples
+        let mut changes: Vec<f64> = Vec::new();
+        for i in 1..history.len() {
+            let prev_price = history[i - 1].0;
+            let curr_price = history[i].0;
+            if prev_price > 0.0 {
+                let pct_change = ((curr_price - prev_price) / prev_price) * 100.0;
+                changes.push(pct_change);
+            }
+        }
+        
+        if changes.is_empty() {
+            return MomentumSignal::default();
+        }
+        
+        // Calculate average momentum (direction and strength)
+        let avg_change: f64 = changes.iter().sum::<f64>() / changes.len() as f64;
+        
+        // Calculate if momentum is accelerating or decelerating
+        // Compare recent changes to older changes
+        let mid = changes.len() / 2;
+        let recent_avg = if mid < changes.len() {
+            changes[mid..].iter().sum::<f64>() / (changes.len() - mid) as f64
+        } else {
+            avg_change
+        };
+        let older_avg = if mid > 0 {
+            changes[..mid].iter().sum::<f64>() / mid as f64
+        } else {
+            avg_change
+        };
+        
+        // Acceleration: positive if recent moves are stronger in the same direction
+        let is_accelerating = if avg_change > 0.0 {
+            recent_avg > older_avg  // Upward and getting stronger
+        } else if avg_change < 0.0 {
+            recent_avg < older_avg  // Downward and getting stronger
+        } else {
+            false
+        };
+        
+        // Check for consistency (all moves in same direction)
+        let positive_count = changes.iter().filter(|&&c| c > 0.0).count();
+        let negative_count = changes.iter().filter(|&&c| c < 0.0).count();
+        let consistency = (positive_count.max(negative_count) as f64) / changes.len() as f64;
+        
+        // Normalize momentum to -1.0 to 1.0 range (0.01% change = 0.1 score)
+        let normalized = (avg_change * 10.0).clamp(-1.0, 1.0);
+        
+        MomentumSignal {
+            score: normalized,
+            is_accelerating,
+            consistency,
+            direction: if avg_change > 0.001 {
+                MomentumDirection::Up
+            } else if avg_change < -0.001 {
+                MomentumDirection::Down
+            } else {
+                MomentumDirection::Neutral
+            },
+        }
+    }
+}
+
+/// Momentum analysis result
+#[derive(Debug, Clone)]
+pub struct MomentumSignal {
+    /// Momentum score from -1.0 (strong down) to 1.0 (strong up)
+    pub score: f64,
+    /// True if momentum is accelerating (getting stronger)
+    pub is_accelerating: bool,
+    /// Consistency of direction (0.0 to 1.0, higher = more consistent)
+    pub consistency: f64,
+    /// Overall direction
+    pub direction: MomentumDirection,
+}
+
+impl Default for MomentumSignal {
+    fn default() -> Self {
+        Self {
+            score: 0.0,
+            is_accelerating: false,
+            consistency: 0.0,
+            direction: MomentumDirection::Neutral,
+        }
+    }
+}
+
+impl MomentumSignal {
+    /// Returns true if this is a strong, reliable signal
+    pub fn is_strong(&self) -> bool {
+        self.score.abs() > 0.3 && self.consistency > 0.6
+    }
+    
+    /// Returns true if momentum supports the given direction
+    pub fn supports_direction(&self, is_up: bool) -> bool {
+        match self.direction {
+            MomentumDirection::Up => is_up,
+            MomentumDirection::Down => !is_up,
+            MomentumDirection::Neutral => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MomentumDirection {
+    Up,
+    Down,
+    Neutral,
 }
 
 // ============================================================================
@@ -279,9 +426,24 @@ impl CryptoArbEngine {
             return None;
         }
         
+        // === MOMENTUM CHECK ===
+        // Get momentum signal for this asset
+        let momentum = state.momentum(asset);
+        let is_up = state.is_up(asset);
+        
+        // Skip if momentum doesn't support the direction we'd bet
+        if !momentum.supports_direction(is_up) {
+            return None;  // Price moved but momentum is against us or neutral
+        }
+        
+        // Skip if momentum is decelerating (likely to reverse)
+        // Only apply this filter if we have enough data
+        if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
+            return None;  // Weak, decelerating momentum - skip
+        }
         
         // Determine direction and get relevant market prices
-        let (bet_up, token_id, market_ask) = if state.is_up(asset) {
+        let (bet_up, token_id, market_ask) = if is_up {
             (true, market.yes_token_id.clone(), market.yes_ask)
         } else {
             (false, market.no_token_id.clone(), market.no_ask)
@@ -301,7 +463,17 @@ impl CryptoArbEngine {
             240 => 2.0,     // 4-hour: 0.30% move → 0.6% prob increase
             _ => 4.0,       // Default
         };
-        let implied_prob = 0.50 + (abs_change * prob_multiplier).min(45.0) / 100.0;  // Cap at 95%
+        
+        // Boost edge calculation if momentum is strong and accelerating
+        let momentum_boost = if momentum.is_strong() && momentum.is_accelerating {
+            1.2  // 20% boost for strong accelerating momentum
+        } else if momentum.is_strong() {
+            1.1  // 10% boost for strong momentum
+        } else {
+            1.0  // No boost
+        };
+        
+        let implied_prob = 0.50 + (abs_change * prob_multiplier * momentum_boost).min(45.0) / 100.0;
         let market_prob = market_ask;
         let edge_pct = (implied_prob - market_prob) * 100.0;
         
@@ -319,7 +491,7 @@ impl CryptoArbEngine {
             return None;
         }
         
-        // Calculate confidence (0-100) - scaled by market type
+        // Calculate confidence (0-100) - scaled by market type and momentum
         let confidence_multiplier = match market.interval_minutes {
             5 => 30.0,      // 5-minute: small moves = high confidence
             15 => 20.0,     // 15-minute: standard
@@ -327,11 +499,25 @@ impl CryptoArbEngine {
             240 => 10.0,    // 4-hour: need even bigger moves
             _ => 20.0,
         };
-        let confidence = ((abs_change * confidence_multiplier).min(100.0)) as u8;
+        
+        // Boost confidence if momentum is strong and consistent
+        let momentum_confidence_boost = if momentum.is_strong() {
+            1.0 + momentum.consistency * 0.5  // Up to 50% boost for consistent momentum
+        } else {
+            1.0
+        };
+        
+        let confidence = ((abs_change * confidence_multiplier * momentum_confidence_boost).min(100.0)) as u8;
         
         // Calculate recommended size based on edge (Kelly-lite)
+        // Increase size for strong momentum signals
         let kelly_fraction = (edge_pct / 100.0) / (1.0 - market_ask);
-        let recommended_size = (self.max_position_usd * kelly_fraction.min(0.25))
+        let size_multiplier = if momentum.is_strong() && momentum.is_accelerating {
+            1.5  // 50% larger position for strong accelerating momentum
+        } else {
+            1.0
+        };
+        let recommended_size = (self.max_position_usd * kelly_fraction.min(0.25) * size_multiplier)
             .max(self.min_position_usd)
             .min(self.max_position_usd);
         
@@ -430,6 +616,8 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAss
                                 state.eth_price = price;
                             }
                         }
+                        // Record price sample for momentum calculation
+                        state.add_price_sample(asset, price);
                         state.last_update = Instant::now();
                     }
                 }
