@@ -1379,6 +1379,8 @@ impl std::fmt::Display for ArbSignal {
         let asset_name = match self.asset {
             CryptoAsset::BTC => "BTC",
             CryptoAsset::ETH => "ETH",
+            CryptoAsset::SOL => "SOL",
+            CryptoAsset::XRP => "XRP",
         };
         write!(
             f,
