@@ -2,25 +2,25 @@
 
 **Branch:** `crypto-arbitrage`  
 **Base:** `main`  
-**Total Changes:** +1,920 lines across 7 files
+**Total Changes:** +2,200 lines across 7 files
 
 ---
 
 ## Summary
 
-This branch adds a complete **crypto latency arbitrage bot** that trades BTC and ETH "Up or Down" markets on Polymarket by monitoring real-time Binance price feeds.
+This branch adds a complete **crypto latency arbitrage bot** that trades BTC, ETH, SOL, and XRP "Up or Down" markets on Polymarket by monitoring real-time Binance price feeds.
 
 ---
 
 ## New Files
 
-### `src/crypto_arb.rs` (+1,278 lines)
+### `src/crypto_arb.rs` (+1,400 lines)
 Core arbitrage engine with:
-- **Binance WebSocket feeds** - Real-time BTC/USDT and ETH/USDT price streaming
+- **Binance WebSocket feeds** - Real-time BTC/USDT, ETH/USDT, SOL/USDT, and XRP/USDT price streaming
 - **Polymarket market discovery** - Auto-finds active 5m, 15m, 1h, 4h markets
 - **Price state tracking** - Monitors price changes within market intervals
 - **Momentum detection** - Analyzes price acceleration and consistency
-- **Multi-market support** - Tracks BTC and ETH markets simultaneously
+- **Multi-market support** - Tracks BTC, ETH, SOL, and XRP markets simultaneously
 - **Signal generation** - Calculates edge, confidence, and position sizing
 
 ### `src/bin/crypto_arb_bot.rs` (+587 lines)
@@ -30,7 +30,7 @@ Main bot executable with:
 - **Mock trading mode** - Paper trading for testing without real funds
 - **Live trading mode** - Executes real trades via Polymarket CLOB API
 - **Market refresh loop** - Finds best markets every 3 seconds
-- **Multi-asset positions** - Can hold BTC and ETH positions simultaneously
+- **Multi-asset positions** - Can hold BTC, ETH, SOL, and XRP positions simultaneously
 
 ---
 
@@ -109,12 +109,13 @@ Score: -1.0 (strong down) to +1.0 (strong up)
 - Boosts edge/confidence for strong momentum
 ```
 
-### 2. Multi-Market Trading
+### 2. Multi-Market Trading (4 Assets)
 ```
-- Tracks BTC and ETH markets separately
+- Tracks BTC, ETH, SOL, and XRP markets separately
 - Independent position management per asset
-- Can hold BTC + ETH positions simultaneously
+- Can hold up to 4 positions simultaneously (one per asset)
 - Automatic market discovery and switching
+- Real-time price feeds from Binance for all 4 assets
 ```
 
 ### 3. Exit Strategy
