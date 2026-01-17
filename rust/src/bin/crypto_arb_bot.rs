@@ -320,7 +320,7 @@ async fn main() -> Result<()> {
     
     let mut check_interval = interval(Duration::from_millis(100));
     let mut price_log_interval = interval(Duration::from_secs(10));
-    let mut market_refresh_interval = interval(Duration::from_secs(5));  // Refresh prices every 5 seconds
+    let mut market_refresh_interval = interval(Duration::from_secs(3));  // Check for new markets every 3 seconds
     
     loop {
         tokio::select! {
@@ -437,23 +437,31 @@ async fn main() -> Result<()> {
             }
             
             _ = market_refresh_interval.tick() => {
-                // Refresh market prices - if orderbook is gone, find a new market
-                let mut need_new_market = active_market.is_none();
+                // Always search for the best available market (markets change quickly)
+                let current_distance = active_market.as_ref()
+                    .map(|m| (m.yes_ask - 0.50).abs())
+                    .unwrap_or(f64::MAX);
                 
+                // Refresh current market prices
+                let mut current_valid = false;
                 if let Some(ref mut market) = active_market {
                     if let Err(e) = update_market_prices(market).await {
                         println!("⚠️ Market {} no longer active: {}", market.description, e);
-                        need_new_market = true;
                     } else {
-                        engine.set_market(market.clone());
+                        // Check if current market is still undecided
+                        if market.yes_ask >= 0.20 && market.yes_ask <= 0.80 {
+                            current_valid = true;
+                            engine.set_market(market.clone());
+                        } else {
+                            println!("⚠️ Market {} now at {:.0}¢ (too decided)", market.description, market.yes_ask * 100.0);
+                        }
                     }
                 }
                 
-                // Find a new active market if needed
-                if need_new_market {
-                    println!("🔄 Searching for new active market...");
+                // Search for a better market if we don't have one or current is invalid
+                if !current_valid {
                     let mut best_market: Option<LiveCryptoMarket> = None;
-                    let mut best_distance = f64::MAX;
+                    let mut best_distance = current_distance;
                     
                     if let Ok(markets) = fetch_live_crypto_markets().await {
                         for mut m in markets {
@@ -474,8 +482,7 @@ async fn main() -> Result<()> {
                         engine.set_market(m.clone());
                         engine.reset_interval().await;
                         active_market = Some(m);
-                    } else {
-                        println!("⚠️ No undecided markets available (need YES between 20-80¢)");
+                    } else if !current_valid {
                         active_market = None;
                     }
                 }
