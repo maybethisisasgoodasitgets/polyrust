@@ -1083,9 +1083,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("");
             
-            // Check for BTC markets: 5m, 15m, 4h up/down, and price target markets
-            let is_btc_updown = slug.starts_with("btc-updown-5m-") 
-                || slug.starts_with("btc-updown-15m-") 
+            // Check for BTC markets: 15m, 4h up/down, and price target markets
+            let is_btc_updown = slug.starts_with("btc-updown-15m-") 
                 || slug.starts_with("btc-updown-4h-")
                 || slug.contains("bitcoin-up-or-down");
             let is_btc_price_target = slug.starts_with("bitcoin-above-") 
@@ -1093,9 +1092,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 || slug.contains("bitcoin-hit")
                 || slug.contains("btc-hit");
             
-            // Check for ETH markets: 5m, 15m, 4h up/down
-            let is_eth_updown = slug.starts_with("eth-updown-5m-") 
-                || slug.starts_with("eth-updown-15m-") 
+            // Check for ETH markets: 15m, 4h up/down
+            let is_eth_updown = slug.starts_with("eth-updown-15m-") 
                 || slug.starts_with("eth-updown-4h-")
                 || slug.contains("ethereum-up-or-down");
             let is_eth_price_target = slug.starts_with("ethereum-above-") 
@@ -1103,9 +1101,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 || slug.contains("ethereum-hit")
                 || slug.contains("eth-hit");
             
-            // Check for SOL markets: 15m up/down
+            // Check for SOL markets: 15m, 4h up/down
             let is_sol_updown = slug.starts_with("sol-updown-15m-") 
-                || slug.starts_with("sol-updown-5m-")
                 || slug.starts_with("sol-updown-4h-")
                 || slug.contains("solana-up-or-down");
             let is_sol_price_target = slug.starts_with("solana-above-") 
@@ -1113,9 +1110,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 || slug.contains("solana-hit")
                 || slug.contains("sol-hit");
             
-            // Check for XRP markets: 15m up/down
+            // Check for XRP markets: 15m, 4h up/down
             let is_xrp_updown = slug.starts_with("xrp-updown-15m-") 
-                || slug.starts_with("xrp-updown-5m-")
                 || slug.starts_with("xrp-updown-4h-")
                 || slug.contains("xrp-up-or-down");
             let is_xrp_price_target = slug.starts_with("xrp-above-") 
@@ -1149,9 +1145,7 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                 }
                 
                 // Determine market type for logging
-                let market_type = if slug.contains("-5m-") {
-                    "5m"
-                } else if slug.contains("-15m-") {
+                let market_type = if slug.contains("-15m-") {
                     "15m"
                 } else if slug.contains("-4h-") {
                     "4h"
@@ -1223,10 +1217,8 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                         
                         println!("      ✅ Adding market: {} @ {:.2}¢", description, yes_price * 100.0);
                         
-                        // Determine interval based on market type (works for both BTC and ETH)
-                        let interval_minutes = if slug.contains("-5m-") {
-                            5
-                        } else if slug.contains("-15m-") {
+                        // Determine interval based on market type (works for all assets)
+                        let interval_minutes = if slug.contains("-15m-") {
                             15
                         } else if slug.contains("-4h-") {
                             240
