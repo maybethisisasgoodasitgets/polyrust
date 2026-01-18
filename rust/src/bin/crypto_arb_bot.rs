@@ -12,6 +12,7 @@
 ///   MOCK_TRADING - Set to "true" for paper trading (default: true)
 ///   MAX_POSITION_USD - Maximum position size per trade (default: 10.0)
 ///   MIN_POSITION_USD - Minimum position size per trade (default: 1.0)
+///   USE_MOMENTUM - Set to "false" to disable momentum filter (default: true)
 
 use anyhow::{Result, anyhow};
 use chrono;
@@ -36,6 +37,7 @@ struct Config {
     mock_trading: bool,
     max_position_usd: f64,
     min_position_usd: f64,
+    use_momentum: bool,
 }
 
 impl Config {
@@ -60,12 +62,18 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1.0);
         
+        // USE_MOMENTUM defaults to true; set to "false" or "0" to disable
+        let use_momentum = env::var("USE_MOMENTUM")
+            .map(|v| !v.eq_ignore_ascii_case("false") && v != "0")
+            .unwrap_or(true);
+        
         Ok(Self {
             private_key,
             funder_address,
             mock_trading,
             max_position_usd,
             min_position_usd,
+            use_momentum,
         })
     }
 }
@@ -260,6 +268,12 @@ async fn main() -> Result<()> {
         cfg.max_position_usd,
         cfg.min_position_usd,
     );
+    
+    // Set momentum filter based on config
+    engine.use_momentum = cfg.use_momentum;
+    if !cfg.use_momentum {
+        println!("⚠️  Momentum filter DISABLED (USE_MOMENTUM=false)");
+    }
     
     // Start Binance price feeds for BTC, ETH, SOL, and XRP
     println!("📡 Starting Binance BTC + ETH + SOL + XRP price feeds...");

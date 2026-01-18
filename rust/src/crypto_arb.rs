@@ -429,6 +429,8 @@ pub struct CryptoArbEngine {
     max_position_usd: f64,
     /// Minimum position size per trade
     min_position_usd: f64,
+    /// Use momentum filter (can be toggled off for more signals)
+    pub use_momentum: bool,
 }
 
 impl CryptoArbEngine {
@@ -439,6 +441,7 @@ impl CryptoArbEngine {
             eth_market: None,
             sol_market: None,
             xrp_market: None,
+            use_momentum: true,  // Momentum filter ON by default
             market: None,
             mock_mode,
             max_position_usd,
@@ -570,20 +573,25 @@ impl CryptoArbEngine {
         println!("   Momentum: score={:.2}, consistency={:.2}, accel={}, supports_dir={}", 
             momentum.score, momentum.consistency, momentum.is_accelerating, momentum.supports_direction(is_up));
         
-        // Skip if momentum doesn't support the direction we'd bet
-        if !momentum.supports_direction(is_up) {
-            println!("   ❌ SKIP: momentum doesn't support direction (is_up={})", is_up);
-            return None;  // Price moved but momentum is against us or neutral
+        // Only apply momentum filters if use_momentum is enabled
+        if self.use_momentum {
+            // Skip if momentum doesn't support the direction we'd bet
+            if !momentum.supports_direction(is_up) {
+                println!("   ❌ SKIP: momentum doesn't support direction (is_up={})", is_up);
+                return None;  // Price moved but momentum is against us or neutral
+            }
+            
+            // Skip if momentum is decelerating (likely to reverse)
+            // Only apply this filter if we have enough data
+            if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
+                println!("   ❌ SKIP: weak decelerating momentum");
+                return None;  // Weak, decelerating momentum - skip
+            }
+            
+            println!("   ✅ Momentum check passed!");
+        } else {
+            println!("   ⏭️ Momentum filter DISABLED - skipping checks");
         }
-        
-        // Skip if momentum is decelerating (likely to reverse)
-        // Only apply this filter if we have enough data
-        if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
-            println!("   ❌ SKIP: weak decelerating momentum");
-            return None;  // Weak, decelerating momentum - skip
-        }
-        
-        println!("   ✅ Momentum check passed!");
         
         // Determine direction and get relevant market prices
         let (bet_up, token_id, market_ask) = if is_up {
@@ -788,12 +796,15 @@ impl CryptoArbEngine {
         let momentum = state.momentum(asset);
         let is_up = state.is_up(asset);
         
-        if !momentum.supports_direction(is_up) {
-            return None;
-        }
-        
-        if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
-            return None;
+        // Only apply momentum filters if use_momentum is enabled
+        if self.use_momentum {
+            if !momentum.supports_direction(is_up) {
+                return None;
+            }
+            
+            if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
+                return None;
+            }
         }
         
         let (bet_up, token_id, market_ask) = if is_up {
