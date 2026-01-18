@@ -431,6 +431,8 @@ pub struct CryptoArbEngine {
     min_position_usd: f64,
     /// Use momentum filter (can be toggled off for more signals)
     pub use_momentum: bool,
+    /// Use edge check (can be toggled off for more signals)
+    pub use_edge_check: bool,
 }
 
 impl CryptoArbEngine {
@@ -442,6 +444,7 @@ impl CryptoArbEngine {
             sol_market: None,
             xrp_market: None,
             use_momentum: true,  // Momentum filter ON by default
+            use_edge_check: true,  // Edge check ON by default
             market: None,
             mock_mode,
             max_position_usd,
@@ -638,8 +641,15 @@ impl CryptoArbEngine {
             _ => 0.5,
         };
         
-        if edge_pct < min_edge {
-            return None;
+        // Only apply edge check if use_edge_check is enabled
+        if self.use_edge_check {
+            if edge_pct < min_edge {
+                println!("   ❌ SKIP: edge too low ({:.2}% < {:.2}%)", edge_pct, min_edge);
+                return None;
+            }
+            println!("   ✅ Edge check passed ({:.2}% >= {:.2}%)", edge_pct, min_edge);
+        } else {
+            println!("   ⏭️ Edge check DISABLED - skipping (edge would be {:.2}%)", edge_pct);
         }
         
         // Calculate confidence (0-100) - scaled by market type and momentum
@@ -845,7 +855,8 @@ impl CryptoArbEngine {
             _ => 0.5,
         };
         
-        if edge_pct < min_edge {
+        // Only apply edge check if use_edge_check is enabled
+        if self.use_edge_check && edge_pct < min_edge {
             return None;
         }
         

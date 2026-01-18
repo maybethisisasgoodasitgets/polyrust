@@ -13,6 +13,7 @@
 ///   MAX_POSITION_USD - Maximum position size per trade (default: 10.0)
 ///   MIN_POSITION_USD - Minimum position size per trade (default: 1.0)
 ///   USE_MOMENTUM - Set to "false" to disable momentum filter (default: true)
+///   USE_EDGE_CHECK - Set to "false" to disable edge check (default: true)
 
 use anyhow::{Result, anyhow};
 use chrono;
@@ -38,6 +39,7 @@ struct Config {
     max_position_usd: f64,
     min_position_usd: f64,
     use_momentum: bool,
+    use_edge_check: bool,
 }
 
 impl Config {
@@ -67,6 +69,11 @@ impl Config {
             .map(|v| !v.eq_ignore_ascii_case("false") && v != "0")
             .unwrap_or(true);
         
+        // USE_EDGE_CHECK defaults to true; set to "false" or "0" to disable
+        let use_edge_check = env::var("USE_EDGE_CHECK")
+            .map(|v| !v.eq_ignore_ascii_case("false") && v != "0")
+            .unwrap_or(true);
+        
         Ok(Self {
             private_key,
             funder_address,
@@ -74,6 +81,7 @@ impl Config {
             max_position_usd,
             min_position_usd,
             use_momentum,
+            use_edge_check,
         })
     }
 }
@@ -273,6 +281,12 @@ async fn main() -> Result<()> {
     engine.use_momentum = cfg.use_momentum;
     if !cfg.use_momentum {
         println!("⚠️  Momentum filter DISABLED (USE_MOMENTUM=false)");
+    }
+    
+    // Set edge check based on config
+    engine.use_edge_check = cfg.use_edge_check;
+    if !cfg.use_edge_check {
+        println!("⚠️  Edge check DISABLED (USE_EDGE_CHECK=false)");
     }
     
     // Start Binance price feeds for BTC, ETH, SOL, and XRP
