@@ -115,16 +115,16 @@ struct OpenPosition {
     asset: CryptoAsset,
 }
 
-// Exit thresholds
-const TAKE_PROFIT_PCT: f64 = 15.0;   // Sell if price up 15% from entry
-const STOP_LOSS_PCT: f64 = -10.0;    // Sell if price down 10% from entry
-const MAX_HOLD_MULTIPLIER: f64 = 0.8; // Exit at 80% of interval time if no TP/SL hit
+// Exit thresholds (HFT mode - quick exits)
+const TAKE_PROFIT_PCT: f64 = 8.0;    // Sell if price up 8% from entry (was 15%)
+const STOP_LOSS_PCT: f64 = -6.0;     // Sell if price down 6% from entry (was -10%)
+const MAX_HOLD_MULTIPLIER: f64 = 0.6; // Exit at 60% of interval time if no TP/SL hit (was 80%)
 
 impl TradingState {
     fn new() -> Self {
         Self {
             last_trade_time: None,
-            min_trade_interval: Duration::from_secs(120),  // Min 2 minutes between trades
+            min_trade_interval: Duration::from_secs(30),  // Min 30 seconds between trades (HFT mode)
             trades_executed: 0,
             estimated_pnl: 0.0,
             open_positions: Vec::new(),
@@ -195,8 +195,8 @@ impl TradingState {
                 -crypto_change_pct * 2.0
             };
             
-            // Require minimum hold time of 60 seconds before checking exits
-            if hold_time < Duration::from_secs(60) {
+            // Require minimum hold time of 20 seconds before checking exits (HFT mode)
+            if hold_time < Duration::from_secs(20) {
                 remaining.push(pos);
                 continue;
             }

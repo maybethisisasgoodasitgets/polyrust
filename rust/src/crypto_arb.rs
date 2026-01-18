@@ -443,8 +443,8 @@ impl CryptoArbEngine {
             eth_market: None,
             sol_market: None,
             xrp_market: None,
-            use_momentum: true,  // Momentum filter ON by default
-            use_edge_check: true,  // Edge check ON by default
+            use_momentum: false,  // Momentum filter OFF for aggressive HFT
+            use_edge_check: false,  // Edge check OFF for aggressive HFT
             market: None,
             mock_mode,
             max_position_usd,
@@ -771,31 +771,32 @@ impl CryptoArbEngine {
         let abs_change = change_pct.abs();
         
         // Asset and market-type-specific minimum price move thresholds
+        // AGGRESSIVE MODE: Very low thresholds for high-frequency trading
         let min_move = match (asset, market.interval_minutes) {
-            // BTC thresholds (lowered - 0.04% = ~$40 at $95k)
-            (CryptoAsset::BTC, 5) => 0.02,
-            (CryptoAsset::BTC, 15) => 0.04,
-            (CryptoAsset::BTC, 60) => 0.08,
-            (CryptoAsset::BTC, 240) => 0.12,
-            (CryptoAsset::BTC, _) => 0.06,
-            // ETH thresholds (standard)
-            (CryptoAsset::ETH, 5) => 0.05,
-            (CryptoAsset::ETH, 15) => 0.10,
-            (CryptoAsset::ETH, 60) => 0.20,
-            (CryptoAsset::ETH, 240) => 0.30,
-            (CryptoAsset::ETH, _) => 0.15,
-            // SOL thresholds (slightly lower - more volatile)
-            (CryptoAsset::SOL, 5) => 0.04,
-            (CryptoAsset::SOL, 15) => 0.08,
-            (CryptoAsset::SOL, 60) => 0.15,
-            (CryptoAsset::SOL, 240) => 0.25,
-            (CryptoAsset::SOL, _) => 0.10,
-            // XRP thresholds (slightly lower - more volatile)
-            (CryptoAsset::XRP, 5) => 0.04,
-            (CryptoAsset::XRP, 15) => 0.08,
-            (CryptoAsset::XRP, 60) => 0.15,
-            (CryptoAsset::XRP, 240) => 0.25,
-            (CryptoAsset::XRP, _) => 0.10,
+            // BTC thresholds (very low for HFT)
+            (CryptoAsset::BTC, 5) => 0.01,       // 5-minute: 0.01% (~$10)
+            (CryptoAsset::BTC, 15) => 0.015,     // 15-minute: 0.015% (~$15)
+            (CryptoAsset::BTC, 60) => 0.03,      // 1-hour: 0.03% (~$30)
+            (CryptoAsset::BTC, 240) => 0.05,     // 4-hour: 0.05% (~$50)
+            (CryptoAsset::BTC, _) => 0.02,       // Default: 0.02% (~$20)
+            // ETH thresholds (low for HFT)
+            (CryptoAsset::ETH, 5) => 0.02,       // 5-minute: 0.02%
+            (CryptoAsset::ETH, 15) => 0.03,      // 15-minute: 0.03%
+            (CryptoAsset::ETH, 60) => 0.05,      // 1-hour: 0.05%
+            (CryptoAsset::ETH, 240) => 0.08,     // 4-hour: 0.08%
+            (CryptoAsset::ETH, _) => 0.03,       // Default: 0.03%
+            // SOL thresholds (low for HFT - volatile)
+            (CryptoAsset::SOL, 5) => 0.02,       // 5-minute: 0.02%
+            (CryptoAsset::SOL, 15) => 0.03,      // 15-minute: 0.03%
+            (CryptoAsset::SOL, 60) => 0.05,      // 1-hour: 0.05%
+            (CryptoAsset::SOL, 240) => 0.08,     // 4-hour: 0.08%
+            (CryptoAsset::SOL, _) => 0.03,       // Default: 0.03%
+            // XRP thresholds (low for HFT - volatile)
+            (CryptoAsset::XRP, 5) => 0.02,       // 5-minute: 0.02%
+            (CryptoAsset::XRP, 15) => 0.03,      // 15-minute: 0.03%
+            (CryptoAsset::XRP, 60) => 0.05,      // 1-hour: 0.05%
+            (CryptoAsset::XRP, 240) => 0.08,     // 4-hour: 0.08%
+            (CryptoAsset::XRP, _) => 0.03,       // Default: 0.03%
         };
         
         if abs_change < min_move {
