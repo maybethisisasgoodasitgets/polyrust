@@ -517,14 +517,34 @@ impl CryptoArbEngine {
         let change_pct = state.price_change_pct(asset);
         let abs_change = change_pct.abs();
         
-        // Market-type-specific minimum price move thresholds
-        // Shorter timeframes need smaller moves, longer need bigger
-        let min_move = match market.interval_minutes {
-            5 => 0.05,      // 5-minute: 0.05% move
-            15 => 0.10,     // 15-minute: 0.10% move  
-            60 => 0.20,     // 1-hour/daily: 0.20% move
-            240 => 0.30,    // 4-hour: 0.30% move
-            _ => 0.15,      // Default: 0.15% move
+        // Asset and market-type-specific minimum price move thresholds
+        // BTC: Lower thresholds since $95k price means 0.10% = $95 move (too high)
+        // Other assets: Keep standard thresholds
+        let min_move = match (asset, market.interval_minutes) {
+            // BTC thresholds (lowered - 0.04% = ~$40 at $95k)
+            (CryptoAsset::BTC, 5) => 0.02,       // 5-minute: 0.02% (~$19)
+            (CryptoAsset::BTC, 15) => 0.04,      // 15-minute: 0.04% (~$38)
+            (CryptoAsset::BTC, 60) => 0.08,      // 1-hour: 0.08% (~$76)
+            (CryptoAsset::BTC, 240) => 0.12,     // 4-hour: 0.12% (~$114)
+            (CryptoAsset::BTC, _) => 0.06,       // Default: 0.06% (~$57)
+            // ETH thresholds (standard)
+            (CryptoAsset::ETH, 5) => 0.05,       // 5-minute: 0.05%
+            (CryptoAsset::ETH, 15) => 0.10,      // 15-minute: 0.10%
+            (CryptoAsset::ETH, 60) => 0.20,      // 1-hour: 0.20%
+            (CryptoAsset::ETH, 240) => 0.30,     // 4-hour: 0.30%
+            (CryptoAsset::ETH, _) => 0.15,       // Default: 0.15%
+            // SOL thresholds (slightly lower - more volatile)
+            (CryptoAsset::SOL, 5) => 0.04,       // 5-minute: 0.04%
+            (CryptoAsset::SOL, 15) => 0.08,      // 15-minute: 0.08%
+            (CryptoAsset::SOL, 60) => 0.15,      // 1-hour: 0.15%
+            (CryptoAsset::SOL, 240) => 0.25,     // 4-hour: 0.25%
+            (CryptoAsset::SOL, _) => 0.10,       // Default: 0.10%
+            // XRP thresholds (slightly lower - more volatile)
+            (CryptoAsset::XRP, 5) => 0.04,       // 5-minute: 0.04%
+            (CryptoAsset::XRP, 15) => 0.08,      // 15-minute: 0.08%
+            (CryptoAsset::XRP, 60) => 0.15,      // 1-hour: 0.15%
+            (CryptoAsset::XRP, 240) => 0.25,     // 4-hour: 0.25%
+            (CryptoAsset::XRP, _) => 0.10,       // Default: 0.10%
         };
         
         // Need minimum price movement for this market type
@@ -715,13 +735,32 @@ impl CryptoArbEngine {
         let change_pct = state.price_change_pct(asset);
         let abs_change = change_pct.abs();
         
-        // Market-type-specific minimum price move thresholds
-        let min_move = match market.interval_minutes {
-            5 => 0.05,
-            15 => 0.10,
-            60 => 0.20,
-            240 => 0.30,
-            _ => 0.15,
+        // Asset and market-type-specific minimum price move thresholds
+        let min_move = match (asset, market.interval_minutes) {
+            // BTC thresholds (lowered - 0.04% = ~$40 at $95k)
+            (CryptoAsset::BTC, 5) => 0.02,
+            (CryptoAsset::BTC, 15) => 0.04,
+            (CryptoAsset::BTC, 60) => 0.08,
+            (CryptoAsset::BTC, 240) => 0.12,
+            (CryptoAsset::BTC, _) => 0.06,
+            // ETH thresholds (standard)
+            (CryptoAsset::ETH, 5) => 0.05,
+            (CryptoAsset::ETH, 15) => 0.10,
+            (CryptoAsset::ETH, 60) => 0.20,
+            (CryptoAsset::ETH, 240) => 0.30,
+            (CryptoAsset::ETH, _) => 0.15,
+            // SOL thresholds (slightly lower - more volatile)
+            (CryptoAsset::SOL, 5) => 0.04,
+            (CryptoAsset::SOL, 15) => 0.08,
+            (CryptoAsset::SOL, 60) => 0.15,
+            (CryptoAsset::SOL, 240) => 0.25,
+            (CryptoAsset::SOL, _) => 0.10,
+            // XRP thresholds (slightly lower - more volatile)
+            (CryptoAsset::XRP, 5) => 0.04,
+            (CryptoAsset::XRP, 15) => 0.08,
+            (CryptoAsset::XRP, 60) => 0.15,
+            (CryptoAsset::XRP, 240) => 0.25,
+            (CryptoAsset::XRP, _) => 0.10,
         };
         
         if abs_change < min_move {
