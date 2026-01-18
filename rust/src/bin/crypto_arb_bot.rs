@@ -309,6 +309,16 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     
+    // Initialize interval start prices to current prices
+    {
+        let mut state = price_state.write().await;
+        state.btc_interval_start_price = state.btc_price;
+        state.eth_interval_start_price = state.eth_price;
+        state.sol_interval_start_price = state.sol_price;
+        state.xrp_interval_start_price = state.xrp_price;
+        println!("📍 Interval start prices initialized");
+    }
+    
     // Find live crypto markets - MULTI-MARKET MODE
     println!("🔍 Searching for live crypto markets on Polymarket...");
     let markets = fetch_live_crypto_markets().await?;
