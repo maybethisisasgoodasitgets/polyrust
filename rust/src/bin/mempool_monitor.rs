@@ -28,6 +28,10 @@ use rust_clob_client::types::{OrderInfo, SizeType, ResubmitRequest};
 use rust_clob_client::atp_markets;
 use rust_clob_client::ligue1_markets;
 use rust_clob_client::cache_manager;
+use pm_whale_follower::settings::{
+    RESUBMIT_PRICE_INCREMENT, CSV_FILE,
+    get_max_resubmit_attempts, should_increment_price,
+};
 
 // ============================================================================
 // Mempool-specific constants (not in shared config)
@@ -147,7 +151,7 @@ async fn main() -> Result<()> {
 
     let cfg = Config::from_env()?;
 
-    let (client, creds) = build_worker_state(
+    let (client, creds): (RustClobClient, ApiCreds) = build_worker_state(
         cfg.private_key.clone(),
         cfg.funder_address.clone(),
         ".clob_market_cache.json",
@@ -413,7 +417,7 @@ fn process_order(
             if status.is_success() { base } else { format!("{} | {}", base, body_text) }
         }
         Err(e) => {
-            let chain: Vec<_> = e.chain().map(|c| c.to_string()).collect();
+            let chain: Vec<String> = e.chain().map(|c| c.to_string()).collect();
             format!("EXEC_FAIL: {} | chain: {}", e, chain.join(" -> "))
         }
     }
