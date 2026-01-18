@@ -557,16 +557,33 @@ impl CryptoArbEngine {
         let momentum = state.momentum(asset);
         let is_up = state.is_up(asset);
         
+        let asset_name = match asset {
+            CryptoAsset::BTC => "BTC",
+            CryptoAsset::ETH => "ETH",
+            CryptoAsset::SOL => "SOL",
+            CryptoAsset::XRP => "XRP",
+        };
+        
+        // Debug: Log when we pass min_move but might fail momentum
+        println!("🔍 {} passed min_move ({:.3}% >= {:.3}%) - checking momentum...", 
+            asset_name, abs_change, min_move);
+        println!("   Momentum: score={:.2}, consistency={:.2}, accel={}, supports_dir={}", 
+            momentum.score, momentum.consistency, momentum.is_accelerating, momentum.supports_direction(is_up));
+        
         // Skip if momentum doesn't support the direction we'd bet
         if !momentum.supports_direction(is_up) {
+            println!("   ❌ SKIP: momentum doesn't support direction (is_up={})", is_up);
             return None;  // Price moved but momentum is against us or neutral
         }
         
         // Skip if momentum is decelerating (likely to reverse)
         // Only apply this filter if we have enough data
         if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
+            println!("   ❌ SKIP: weak decelerating momentum");
             return None;  // Weak, decelerating momentum - skip
         }
+        
+        println!("   ✅ Momentum check passed!");
         
         // Determine direction and get relevant market prices
         let (bet_up, token_id, market_ask) = if is_up {
