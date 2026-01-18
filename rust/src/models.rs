@@ -57,6 +57,15 @@ pub struct ResubmitRequest {
     pub attempt: u8,            // Current attempt number (1-indexed)
 }
 
+/// Position update message sent from order worker to position tracker
+#[derive(Debug, Clone)]
+pub struct PositionUpdate {
+    pub token_id: String,
+    pub entry_price: f64,
+    pub shares: f64,
+    pub is_buy: bool,  // true = add position, false = reduce position
+}
+
 impl fmt::Display for SizeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

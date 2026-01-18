@@ -26,6 +26,7 @@ use pm_whale_follower::settings::*;
 use pm_whale_follower::market_cache;
 use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
+use pm_whale_follower::position_tracker::{PositionTracker, PriceFetcher, STOP_LOSS_CHECK_INTERVAL_SECS};
 use models::*;
 use std::sync::Arc;
 
@@ -101,13 +102,30 @@ async fn main() -> Result<()> {
 
     let (order_tx, order_rx) = mpsc::channel(1024);
     let (resubmit_tx, resubmit_rx) = mpsc::unbounded_channel::<ResubmitRequest>();
+    let (position_tx, position_rx) = mpsc::unbounded_channel::<PositionUpdate>();
 
     let client_arc = Arc::new(client);
     let creds_arc = Arc::new(prepared_creds.clone());
 
-    start_order_worker(order_rx, client_arc.clone(), prepared_creds, cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone());
+    // Create position tracker for stop-loss monitoring
+    let position_tracker = Arc::new(PositionTracker::new());
 
-    tokio::spawn(resubmit_worker(resubmit_rx, client_arc, creds_arc));
+    start_order_worker(order_rx, client_arc.clone(), prepared_creds.clone(), cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone(), position_tx);
+
+    tokio::spawn(resubmit_worker(resubmit_rx, client_arc.clone(), creds_arc.clone()));
+
+    // Start position update receiver
+    let tracker_clone = Arc::clone(&position_tracker);
+    tokio::spawn(position_update_worker(position_rx, tracker_clone));
+
+    // Start stop-loss monitor
+    if cfg.enable_trading && !cfg.mock_trading {
+        let tracker_for_stoploss = Arc::clone(&position_tracker);
+        let client_for_stoploss = Arc::clone(&client_arc);
+        let creds_for_stoploss = Arc::clone(&creds_arc);
+        tokio::spawn(stop_loss_worker(tracker_for_stoploss, client_for_stoploss, creds_for_stoploss));
+        println!("🛑 Stop-loss monitor started (5% threshold)");
+    }
 
     let order_engine = OrderEngine {
         tx: order_tx,
@@ -170,10 +188,11 @@ fn start_order_worker(
     mock_trading: bool,
     risk_config: RiskGuardConfig,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
+    position_tx: mpsc::UnboundedSender<PositionUpdate>,
 ) {
     std::thread::spawn(move || {
         let mut guard = RiskGuard::new(risk_config);
-        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx);
+        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx, position_tx);
     });
 }
 
@@ -185,10 +204,11 @@ fn order_worker(
     mock_trading: bool,
     guard: &mut RiskGuard,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
+    position_tx: mpsc::UnboundedSender<PositionUpdate>,
 ) {
     let mut client_mut = (*client).clone();
     while let Some(work) = rx.blocking_recv() {
-        let status = process_order(&work.event.order, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live);
+        let status = process_order(&work.event.order, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, &position_tx, work.is_live);
         let _ = work.respond_to.send(status);
     }
 }
@@ -205,6 +225,7 @@ fn process_order(
     mock_trading: bool,
     guard: &mut RiskGuard,
     resubmit_tx: &mpsc::UnboundedSender<ResubmitRequest>,
+    position_tx: &mpsc::UnboundedSender<PositionUpdate>,
     is_live: Option<bool>,
 ) -> String {
     if !enable_trading { return "SKIPPED_DISABLED".into(); }
@@ -360,6 +381,16 @@ fn process_order(
                     if status.is_success() { (my_shares, limit_price) } else { (0.0, limit_price) }
                 });
 
+            // Track position for stop-loss monitoring (only for successful buys)
+            if status.is_success() && side_is_buy && filled_shares > 0.0 {
+                let _ = position_tx.send(PositionUpdate {
+                    token_id: info.clob_token_id.to_string(),
+                    entry_price: actual_fill_price,
+                    shares: filled_shares,
+                    is_buy: true,
+                });
+            }
+
             // Format with color-coded fill percentage
             let pink = "\x1b[38;5;199m";
             let reset = "\x1b[0m";
@@ -462,6 +493,168 @@ fn fetch_book_depth_blocking(
     }
 
     Ok(calc_liquidity_depth(side, &levels[..count], threshold))
+}
+
+// ============================================================================
+// Position Tracking & Stop-Loss
+// ============================================================================
+
+/// Receives position updates from order worker and updates the tracker
+async fn position_update_worker(
+    mut rx: mpsc::UnboundedReceiver<PositionUpdate>,
+    tracker: Arc<PositionTracker>,
+) {
+    while let Some(update) = rx.recv().await {
+        if update.is_buy {
+            tracker.add_position(update.token_id, update.entry_price, update.shares).await;
+        } else {
+            tracker.reduce_position(&update.token_id, update.shares).await;
+        }
+    }
+}
+
+/// Background worker that checks positions for stop-loss triggers
+async fn stop_loss_worker(
+    tracker: Arc<PositionTracker>,
+    client: Arc<RustClobClient>,
+    creds: Arc<PreparedCreds>,
+) {
+    let price_fetcher = ClobPriceFetcher { client: client.clone() };
+    let mut interval = tokio::time::interval(Duration::from_secs(STOP_LOSS_CHECK_INTERVAL_SECS));
+    
+    loop {
+        interval.tick().await;
+        
+        let positions = tracker.get_all_positions().await;
+        if positions.is_empty() {
+            continue;
+        }
+        
+        for position in positions {
+            // Fetch current price
+            if let Some(current_price) = price_fetcher.get_current_price(&position.token_id).await {
+                let pnl_pct = position.pnl_pct(current_price) * 100.0;
+                
+                // Check if stop-loss should trigger
+                if position.should_stop_loss(current_price) {
+                    println!(
+                        "🛑 STOP-LOSS TRIGGERED: {} | entry: {:.4} | current: {:.4} | P&L: {:.2}% | shares: {:.2}",
+                        position.token_id, position.entry_price, current_price, pnl_pct, position.shares
+                    );
+                    
+                    // Execute stop-loss sell
+                    let client_clone = client.clone();
+                    let creds_clone = creds.clone();
+                    let token_id = position.token_id.clone();
+                    let shares = position.shares;
+                    let tracker_clone = tracker.clone();
+                    
+                    tokio::spawn(async move {
+                        match execute_stop_loss_sell(&client_clone, &creds_clone, &token_id, shares, current_price).await {
+                            Ok(filled) => {
+                                println!(
+                                    "🛑 STOP-LOSS EXECUTED: {} | sold {:.2} shares @ ~{:.4}",
+                                    token_id, filled, current_price
+                                );
+                                // Remove position from tracker
+                                tracker_clone.remove_position(&token_id).await;
+                            }
+                            Err(e) => {
+                                eprintln!("🛑 STOP-LOSS FAILED: {} | error: {}", token_id, e);
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Execute a stop-loss sell order
+async fn execute_stop_loss_sell(
+    client: &Arc<RustClobClient>,
+    creds: &Arc<PreparedCreds>,
+    token_id: &str,
+    shares: f64,
+    current_price: f64,
+) -> Result<f64> {
+    // Use a slightly lower price to ensure fill (market sell behavior)
+    let sell_price = (current_price - 0.01).max(0.01);
+    let rounded_shares = (shares * 100.0).floor() / 100.0;
+    
+    if rounded_shares < 1.0 {
+        return Err(anyhow!("Position too small to sell"));
+    }
+    
+    let args = OrderArgs {
+        token_id: token_id.to_string(),
+        price: sell_price,
+        size: rounded_shares,
+        side: "SELL".into(),
+        fee_rate_bps: None,
+        nonce: Some(0),
+        expiration: Some("0".into()),  // FAK order
+        taker: None,
+        order_type: Some("FAK".to_string()),
+    };
+    
+    let client_clone = client.clone();
+    let creds_clone = creds.clone();
+    let args_clone = args;
+    
+    let result = tokio::task::spawn_blocking(move || {
+        let mut client_mut = (*client_clone).clone();
+        client_mut.create_order(args_clone).and_then(|signed| {
+            let body = signed.post_body(&creds_clone.api_key, "FAK");
+            client_mut.post_order_fast(body, &creds_clone)
+        })
+    }).await?;
+    
+    match result {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                Ok(rounded_shares)
+            } else {
+                let body = resp.text().unwrap_or_default();
+                Err(anyhow!("Sell failed: {}", body))
+            }
+        }
+        Err(e) => Err(anyhow!("Order error: {}", e)),
+    }
+}
+
+/// Price fetcher that uses the CLOB API
+struct ClobPriceFetcher {
+    client: Arc<RustClobClient>,
+}
+
+#[async_trait::async_trait]
+impl PriceFetcher for ClobPriceFetcher {
+    async fn get_current_price(&self, token_id: &str) -> Option<f64> {
+        let url = format!("{}/book?token_id={}", CLOB_API_BASE, token_id);
+        let client = self.client.clone();
+        let url_clone = url.clone();
+        
+        let result = tokio::task::spawn_blocking(move || {
+            client.http_client()
+                .get(&url_clone)
+                .timeout(Duration::from_secs(2))
+                .send()
+        }).await.ok()?.ok()?;
+        
+        if !result.status().is_success() {
+            return None;
+        }
+        
+        let book: Value = result.json().ok()?;
+        
+        // Get best bid price (what we can sell at)
+        let bids = book["bids"].as_array()?;
+        let best_bid = bids.first()?;
+        let price: f64 = best_bid["price"].as_str()?.parse().ok()?;
+        
+        Some(price)
+    }
 }
 
 // ============================================================================

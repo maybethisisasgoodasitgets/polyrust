@@ -27,6 +27,7 @@ pub mod tennis_markets;
 pub mod soccer_markets;
 pub mod settings;
 pub mod models;
+pub mod position_tracker;
 
 #[cfg(test)]
 mod resubmit_tests;
