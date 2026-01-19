@@ -592,7 +592,7 @@ async fn main() -> Result<()> {
                             let yes_price = m.yes_ask;
                             let distance = (yes_price - 0.50).abs();
                             
-                            if yes_price >= 0.20 && yes_price <= 0.80 {
+                            if yes_price >= 0.03 && yes_price <= 0.97 {
                                 match m.asset {
                                     CryptoAsset::BTC => {
                                         if distance < best_btc_dist {
