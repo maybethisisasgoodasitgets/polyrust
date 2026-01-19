@@ -458,6 +458,7 @@ async fn main() -> Result<()> {
     let mut check_interval = interval(Duration::from_millis(100));
     let mut price_log_interval = interval(Duration::from_secs(10));
     let mut market_refresh_interval = interval(Duration::from_secs(3));  // Check for new markets every 3 seconds
+    let mut market_price_log_interval = interval(Duration::from_secs(30));  // Log market prices every 30s
     
     loop {
         tokio::select! {
@@ -468,6 +469,13 @@ async fn main() -> Result<()> {
                 for signal in signals {
                     // Check if we can trade this specific asset (no open position for it)
                     if !state.can_trade_asset(signal.asset) {
+                        let asset_name = match signal.asset {
+                            CryptoAsset::BTC => "BTC",
+                            CryptoAsset::ETH => "ETH",
+                            CryptoAsset::SOL => "SOL",
+                            CryptoAsset::XRP => "XRP",
+                        };
+                        println!("   ⏸️ {} signal skipped: already have open position", asset_name);
                         continue;  // Already have an open position for this asset
                     }
                     
@@ -588,6 +596,27 @@ async fn main() -> Result<()> {
                     pnl_str,
                     if cfg.mock_trading { "MOCK" } else { "LIVE" }
                 );
+            }
+            
+            _ = market_price_log_interval.tick() => {
+                // Log current market prices to show user why we're not trading
+                println!("📊 CURRENT MARKET PRICES:");
+                if let Some(m) = engine.get_market(CryptoAsset::BTC) {
+                    println!("   🟠 BTC: YES={:.1}¢ NO={:.1}¢ | {}", 
+                        m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
+                }
+                if let Some(m) = engine.get_market(CryptoAsset::ETH) {
+                    println!("   🔵 ETH: YES={:.1}¢ NO={:.1}¢ | {}", 
+                        m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
+                }
+                if let Some(m) = engine.get_market(CryptoAsset::SOL) {
+                    println!("   🟣 SOL: YES={:.1}¢ NO={:.1}¢ | {}", 
+                        m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
+                }
+                if let Some(m) = engine.get_market(CryptoAsset::XRP) {
+                    println!("   ⚪ XRP: YES={:.1}¢ NO={:.1}¢ | {}", 
+                        m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
+                }
             }
             
             _ = market_refresh_interval.tick() => {

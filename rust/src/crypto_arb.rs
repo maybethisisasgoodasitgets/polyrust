@@ -825,11 +825,22 @@ impl CryptoArbEngine {
         };
         
         if abs_velocity < min_velocity {
+            // Debug: Log when we're close but not quite there
+            if abs_velocity > min_velocity * 0.5 {
+                let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
+                println!("   🔍 {} velocity {:.4}% < threshold {:.4}% (${:.2} move needed)", 
+                    asset_name, abs_velocity, min_velocity, current_price * min_velocity / 100.0);
+            }
             return None;
         }
         
         // Direction based on velocity (not interval start)
         let is_up = velocity > 0.0;
+        
+        // Debug: Log when we DO meet velocity threshold
+        let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
+        println!("   ✅ {} velocity threshold met: {:.4}% ({})", 
+            asset_name, abs_velocity, if is_up { "UP" } else { "DOWN" });
         
         let (bet_up, token_id, market_ask) = if is_up {
             (true, market.yes_token_id.clone(), market.yes_ask)
@@ -839,6 +850,9 @@ impl CryptoArbEngine {
         
         // Don't buy if price is too high (already decided)
         if market_ask > MAX_BUY_PRICE {
+            let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
+            println!("   ⚠️ {} signal blocked: market price {:.2}¢ > max {:.0}¢ (no edge)", 
+                asset_name, market_ask * 100.0, MAX_BUY_PRICE * 100.0);
             return None;
         }
         
