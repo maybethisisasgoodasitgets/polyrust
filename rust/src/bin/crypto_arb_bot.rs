@@ -368,8 +368,9 @@ async fn main() -> Result<()> {
         println!("   [{}] {} - Yes: {:.2}¢, No: {:.2}¢ (distance: {:.2})", 
             asset_str, market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
         
-        // Only consider undecided markets (YES between 20¢ and 80¢)
-        if yes_price >= 0.20 && yes_price <= 0.80 {
+        // Consider markets with any tradeable price (YES between 3¢ and 97¢)
+        // Wider range to catch more opportunities - we'll bet against decided markets
+        if yes_price >= 0.03 && yes_price <= 0.97 {
             match market.asset {
                 CryptoAsset::BTC => {
                     if distance_from_50 < best_btc_distance {
