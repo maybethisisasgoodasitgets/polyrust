@@ -54,10 +54,11 @@ impl Config {
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(true);  // Default to mock mode for safety
         
+        // Default to $2 for testing - small trades to prove the process works
         let max_position_usd = env::var("MAX_POSITION_USD")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(10.0);
+            .unwrap_or(2.0);
         
         let min_position_usd = env::var("MIN_POSITION_USD")
             .ok()
@@ -340,14 +341,15 @@ async fn main() -> Result<()> {
     }
     
     // Find best market for EACH asset (BTC, ETH, SOL, XRP separately)
+    // PRIORITY: 15-minute markets > 4-hour markets > daily markets
     let mut best_btc_market: Option<LiveCryptoMarket> = None;
-    let mut best_btc_distance = f64::MAX;
+    let mut best_btc_score = f64::MAX;  // Lower is better
     let mut best_eth_market: Option<LiveCryptoMarket> = None;
-    let mut best_eth_distance = f64::MAX;
+    let mut best_eth_score = f64::MAX;
     let mut best_sol_market: Option<LiveCryptoMarket> = None;
-    let mut best_sol_distance = f64::MAX;
+    let mut best_sol_score = f64::MAX;
     let mut best_xrp_market: Option<LiveCryptoMarket> = None;
-    let mut best_xrp_distance = f64::MAX;
+    let mut best_xrp_score = f64::MAX;
     
     for mut market in markets {
         // Update market prices from CLOB
@@ -359,40 +361,53 @@ async fn main() -> Result<()> {
         let yes_price = market.yes_ask;
         let distance_from_50 = (yes_price - 0.50).abs();
         
+        // Priority scoring: prefer 15m markets, then shorter intervals
+        // 15m = 0, 4h = 1, daily = 2, then add distance from 50%
+        let interval_priority = match market.interval_minutes {
+            15 => 0.0,
+            240 => 1.0,  // 4 hours
+            _ => 2.0,    // daily or other
+        };
+        let score = interval_priority + distance_from_50;
+        
         let asset_str = match market.asset { 
             CryptoAsset::BTC => "BTC", 
             CryptoAsset::ETH => "ETH",
             CryptoAsset::SOL => "SOL",
             CryptoAsset::XRP => "XRP",
         };
-        println!("   [{}] {} - Yes: {:.2}¢, No: {:.2}¢ (distance: {:.2})", 
-            asset_str, market.description, market.yes_ask * 100.0, market.no_ask * 100.0, distance_from_50);
+        let interval_str = match market.interval_minutes {
+            15 => "15m",
+            240 => "4h",
+            _ => "daily",
+        };
+        println!("   [{}][{}] {} - Yes: {:.2}¢, No: {:.2}¢ (score: {:.2})", 
+            asset_str, interval_str, market.description, market.yes_ask * 100.0, market.no_ask * 100.0, score);
         
-        // Consider markets with any tradeable price (YES between 3¢ and 97¢)
-        // Wider range to catch more opportunities - we'll bet against decided markets
+        // Consider markets with tradeable price (YES between 3¢ and 97¢)
         if yes_price >= 0.03 && yes_price <= 0.97 {
             match market.asset {
                 CryptoAsset::BTC => {
-                    if distance_from_50 < best_btc_distance {
-                        best_btc_distance = distance_from_50;
+                    if score < best_btc_score {
+                        best_btc_score = score;
                         best_btc_market = Some(market);
                     }
                 }
                 CryptoAsset::ETH => {
-                    if distance_from_50 < best_eth_distance {
-                        best_eth_distance = distance_from_50;
+                    if score < best_eth_score {
+                        best_eth_score = score;
                         best_eth_market = Some(market);
                     }
                 }
                 CryptoAsset::SOL => {
-                    if distance_from_50 < best_sol_distance {
-                        best_sol_distance = distance_from_50;
+                    if score < best_sol_score {
+                        best_sol_score = score;
                         best_sol_market = Some(market);
                     }
                 }
                 CryptoAsset::XRP => {
-                    if distance_from_50 < best_xrp_distance {
-                        best_xrp_distance = distance_from_50;
+                    if score < best_xrp_score {
+                        best_xrp_score = score;
                         best_xrp_market = Some(market);
                     }
                 }
