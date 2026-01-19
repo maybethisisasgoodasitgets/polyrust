@@ -21,9 +21,9 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 /// Minimum price move (%) to trigger a bet
 pub const MIN_PRICE_MOVE_PCT: f64 = 0.10;  // 0.1% move
 
-/// Maximum odds to buy (e.g., 0.97 = 97 cents for $1 payout)
-/// Set high to allow trading on more decided markets
-pub const MAX_BUY_PRICE: f64 = 0.97;
+/// Maximum odds to buy (e.g., 0.99 = 99 cents for $1 payout)
+/// Set very high to allow trading on decided markets
+pub const MAX_BUY_PRICE: f64 = 0.99;
 
 /// Minimum edge required (difference between true prob and market odds)
 pub const MIN_EDGE_PCT: f64 = 2.0;  // 2% edge minimum
