@@ -812,15 +812,15 @@ impl CryptoArbEngine {
         let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
         let abs_velocity = velocity.abs();
         
-        // AGGRESSIVE thresholds for velocity-based trading
-        // These are MUCH lower than before - we want to catch quick moves
+        // ULTRA-AGGRESSIVE thresholds for velocity-based trading
+        // Very low to catch any meaningful movement
         let min_velocity = match asset {
-            // BTC: 0.005% in 5 seconds = ~$5 move, very achievable
-            CryptoAsset::BTC => 0.005,
+            // BTC: 0.002% in 5 seconds = ~$2 move
+            CryptoAsset::BTC => 0.002,
             // Altcoins: slightly higher due to more noise
-            CryptoAsset::ETH => 0.008,
-            CryptoAsset::SOL => 0.010,
-            CryptoAsset::XRP => 0.010,
+            CryptoAsset::ETH => 0.003,
+            CryptoAsset::SOL => 0.004,
+            CryptoAsset::XRP => 0.004,
         };
         
         if abs_velocity < min_velocity {
