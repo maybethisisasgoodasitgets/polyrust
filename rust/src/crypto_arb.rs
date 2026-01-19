@@ -59,7 +59,10 @@ pub enum CryptoAsset {
 // ============================================================================
 
 /// Number of price samples to keep for momentum calculation
-const MOMENTUM_WINDOW_SIZE: usize = 10;
+const MOMENTUM_WINDOW_SIZE: usize = 20;
+
+/// Velocity window in seconds - how far back to look for quick moves
+const VELOCITY_WINDOW_SECS: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub struct PriceState {
@@ -192,6 +195,43 @@ impl PriceState {
         if history.len() > MOMENTUM_WINDOW_SIZE {
             history.remove(0);
         }
+    }
+    
+    /// Calculate short-term velocity (price change over last N seconds)
+    /// This is the key metric for reactive trading - detects quick moves
+    pub fn velocity_pct(&self, asset: CryptoAsset, window_secs: u64) -> f64 {
+        let history = match asset {
+            CryptoAsset::BTC => &self.btc_price_history,
+            CryptoAsset::ETH => &self.eth_price_history,
+            CryptoAsset::SOL => &self.sol_price_history,
+            CryptoAsset::XRP => &self.xrp_price_history,
+        };
+        
+        if history.len() < 2 {
+            return 0.0;
+        }
+        
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(window_secs);
+        
+        // Find the oldest price within our window
+        let mut oldest_in_window: Option<f64> = None;
+        for (price, time) in history.iter() {
+            if *time >= cutoff {
+                oldest_in_window = Some(*price);
+                break;
+            }
+        }
+        
+        // If no prices in window, use the oldest available
+        let start_price = oldest_in_window.unwrap_or_else(|| history.first().map(|(p, _)| *p).unwrap_or(0.0));
+        let current_price = history.last().map(|(p, _)| *p).unwrap_or(0.0);
+        
+        if start_price == 0.0 {
+            return 0.0;
+        }
+        
+        ((current_price - start_price) / start_price) * 100.0
     }
     
     /// Calculate momentum score for an asset
@@ -745,6 +785,7 @@ impl CryptoArbEngine {
     }
     
     /// Check for arbitrage opportunity on a specific asset's market
+    /// VELOCITY-BASED: Reacts to quick price moves over last few seconds
     pub async fn check_opportunity_for_asset(&self, asset: CryptoAsset) -> Option<ArbSignal> {
         let market = match asset {
             CryptoAsset::BTC => self.btc_market.as_ref()?,
@@ -755,68 +796,39 @@ impl CryptoArbEngine {
         
         let state = self.price_state.read().await;
         
-        // Need valid prices for the relevant asset
-        let (current_price, interval_start) = match asset {
-            CryptoAsset::BTC => (state.btc_price, state.btc_interval_start_price),
-            CryptoAsset::ETH => (state.eth_price, state.eth_interval_start_price),
-            CryptoAsset::SOL => (state.sol_price, state.sol_interval_start_price),
-            CryptoAsset::XRP => (state.xrp_price, state.xrp_interval_start_price),
-        };
-        
-        if current_price == 0.0 || interval_start == 0.0 {
+        // Get current price
+        let current_price = state.current_price(asset);
+        if current_price == 0.0 {
             return None;
         }
         
-        let change_pct = state.price_change_pct(asset);
-        let abs_change = change_pct.abs();
+        // === VELOCITY-BASED DETECTION ===
+        // Use short-term velocity (last 5 seconds) instead of interval start
+        // This reacts to QUICK moves, not slow drifts
+        let velocity_5s = state.velocity_pct(asset, 5);
+        let velocity_3s = state.velocity_pct(asset, 3);
         
-        // Asset and market-type-specific minimum price move thresholds
-        // AGGRESSIVE MODE: Very low thresholds for high-frequency trading
-        let min_move = match (asset, market.interval_minutes) {
-            // BTC thresholds (very low for HFT)
-            (CryptoAsset::BTC, 5) => 0.01,       // 5-minute: 0.01% (~$10)
-            (CryptoAsset::BTC, 15) => 0.015,     // 15-minute: 0.015% (~$15)
-            (CryptoAsset::BTC, 60) => 0.03,      // 1-hour: 0.03% (~$30)
-            (CryptoAsset::BTC, 240) => 0.05,     // 4-hour: 0.05% (~$50)
-            (CryptoAsset::BTC, _) => 0.02,       // Default: 0.02% (~$20)
-            // ETH thresholds (low for HFT)
-            (CryptoAsset::ETH, 5) => 0.02,       // 5-minute: 0.02%
-            (CryptoAsset::ETH, 15) => 0.03,      // 15-minute: 0.03%
-            (CryptoAsset::ETH, 60) => 0.05,      // 1-hour: 0.05%
-            (CryptoAsset::ETH, 240) => 0.08,     // 4-hour: 0.08%
-            (CryptoAsset::ETH, _) => 0.03,       // Default: 0.03%
-            // SOL thresholds (low for HFT - volatile)
-            (CryptoAsset::SOL, 5) => 0.02,       // 5-minute: 0.02%
-            (CryptoAsset::SOL, 15) => 0.03,      // 15-minute: 0.03%
-            (CryptoAsset::SOL, 60) => 0.05,      // 1-hour: 0.05%
-            (CryptoAsset::SOL, 240) => 0.08,     // 4-hour: 0.08%
-            (CryptoAsset::SOL, _) => 0.03,       // Default: 0.03%
-            // XRP thresholds (low for HFT - volatile)
-            (CryptoAsset::XRP, 5) => 0.02,       // 5-minute: 0.02%
-            (CryptoAsset::XRP, 15) => 0.03,      // 15-minute: 0.03%
-            (CryptoAsset::XRP, 60) => 0.05,      // 1-hour: 0.05%
-            (CryptoAsset::XRP, 240) => 0.08,     // 4-hour: 0.08%
-            (CryptoAsset::XRP, _) => 0.03,       // Default: 0.03%
+        // Use the stronger of the two velocities
+        let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
+        let abs_velocity = velocity.abs();
+        
+        // AGGRESSIVE thresholds for velocity-based trading
+        // These are MUCH lower than before - we want to catch quick moves
+        let min_velocity = match asset {
+            // BTC: 0.005% in 5 seconds = ~$5 move, very achievable
+            CryptoAsset::BTC => 0.005,
+            // Altcoins: slightly higher due to more noise
+            CryptoAsset::ETH => 0.008,
+            CryptoAsset::SOL => 0.010,
+            CryptoAsset::XRP => 0.010,
         };
         
-        if abs_change < min_move {
+        if abs_velocity < min_velocity {
             return None;
         }
         
-        // === MOMENTUM CHECK ===
-        let momentum = state.momentum(asset);
-        let is_up = state.is_up(asset);
-        
-        // Only apply momentum filters if use_momentum is enabled
-        if self.use_momentum {
-            if !momentum.supports_direction(is_up) {
-                return None;
-            }
-            
-            if momentum.consistency > 0.0 && !momentum.is_accelerating && momentum.score.abs() < 0.5 {
-                return None;
-            }
-        }
+        // Direction based on velocity (not interval start)
+        let is_up = velocity > 0.0;
         
         let (bet_up, token_id, market_ask) = if is_up {
             (true, market.yes_token_id.clone(), market.yes_ask)
@@ -824,68 +836,20 @@ impl CryptoArbEngine {
             (false, market.no_token_id.clone(), market.no_ask)
         };
         
+        // Don't buy if price is too high (already decided)
         if market_ask > MAX_BUY_PRICE {
             return None;
         }
         
-        let prob_multiplier = match market.interval_minutes {
-            5 => 8.0,
-            15 => 5.0,
-            60 => 3.0,
-            240 => 2.0,
-            _ => 4.0,
-        };
+        // Simple confidence based on velocity strength
+        // Stronger velocity = higher confidence
+        let confidence = ((abs_velocity * 500.0).min(95.0).max(30.0)) as u8;
         
-        let momentum_boost = if momentum.is_strong() && momentum.is_accelerating {
-            1.2
-        } else if momentum.is_strong() {
-            1.1
-        } else {
-            1.0
-        };
+        // Simple edge calculation - velocity implies direction
+        let edge_pct = abs_velocity * 10.0;  // 0.01% velocity = 0.1% edge
         
-        let implied_prob = 0.50 + (abs_change * prob_multiplier * momentum_boost).min(45.0) / 100.0;
-        let market_prob = market_ask;
-        let edge_pct = (implied_prob - market_prob) * 100.0;
-        
-        let min_edge = match market.interval_minutes {
-            5 => 0.3,
-            15 => 0.5,
-            60 => 1.0,
-            240 => 1.5,
-            _ => 0.5,
-        };
-        
-        // Only apply edge check if use_edge_check is enabled
-        if self.use_edge_check && edge_pct < min_edge {
-            return None;
-        }
-        
-        let confidence_multiplier = match market.interval_minutes {
-            5 => 30.0,
-            15 => 20.0,
-            60 => 15.0,
-            240 => 10.0,
-            _ => 20.0,
-        };
-        
-        let momentum_confidence_boost = if momentum.is_strong() {
-            1.0 + momentum.consistency * 0.5
-        } else {
-            1.0
-        };
-        
-        let confidence = ((abs_change * confidence_multiplier * momentum_confidence_boost).min(100.0)) as u8;
-        
-        let kelly_fraction = (edge_pct / 100.0) / (1.0 - market_ask);
-        let size_multiplier = if momentum.is_strong() && momentum.is_accelerating {
-            1.5
-        } else {
-            1.0
-        };
-        let recommended_size = (self.max_position_usd * kelly_fraction.min(0.25) * size_multiplier)
-            .max(self.min_position_usd)
-            .min(self.max_position_usd);
+        // Position size - use configured max for aggressive trading
+        let recommended_size = self.max_position_usd;
         
         Some(ArbSignal {
             bet_up,
@@ -894,7 +858,7 @@ impl CryptoArbEngine {
             edge_pct,
             crypto_price: current_price,
             asset,
-            price_change_pct: change_pct,
+            price_change_pct: velocity,
             confidence,
             recommended_size_usd: recommended_size,
         })

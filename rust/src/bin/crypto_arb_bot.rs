@@ -544,28 +544,29 @@ async fn main() -> Result<()> {
             }
             
             _ = price_log_interval.tick() => {
-                // Log current state for all 4 assets
+                // Log current state with VELOCITY (5-second price change)
                 let ps = price_state.read().await;
-                let btc_change = ps.btc_change_pct();
-                let eth_change = ps.eth_change_pct();
-                let sol_change = ps.sol_change_pct();
-                let xrp_change = ps.xrp_change_pct();
-                let btc_dir = if btc_change >= 0.0 { "⬆️" } else { "⬇️" };
-                let eth_dir = if eth_change >= 0.0 { "⬆️" } else { "⬇️" };
-                let sol_dir = if sol_change >= 0.0 { "⬆️" } else { "⬇️" };
-                let xrp_dir = if xrp_change >= 0.0 { "⬆️" } else { "⬇️" };
+                let btc_vel = ps.velocity_pct(CryptoAsset::BTC, 5);
+                let eth_vel = ps.velocity_pct(CryptoAsset::ETH, 5);
+                let sol_vel = ps.velocity_pct(CryptoAsset::SOL, 5);
+                let xrp_vel = ps.velocity_pct(CryptoAsset::XRP, 5);
+                let btc_dir = if btc_vel >= 0.0 { "⬆" } else { "⬇" };
+                let eth_dir = if eth_vel >= 0.0 { "⬆" } else { "⬇" };
+                let sol_dir = if sol_vel >= 0.0 { "⬆" } else { "⬇" };
+                let xrp_dir = if xrp_vel >= 0.0 { "⬆" } else { "⬇" };
                 let open_pos = state.open_positions.len();
                 let pnl_str = if state.estimated_pnl != 0.0 {
                     format!(" | P&L: ${:+.2}", state.estimated_pnl)
                 } else {
                     String::new()
                 };
+                // Show velocity (v) instead of interval change
                 println!(
-                    "📈 BTC ${:.0}{}{:+.2}% | ETH ${:.0}{}{:+.2}% | SOL ${:.1}{}{:+.2}% | XRP ${:.3}{}{:+.2}% | T:{} O:{}{} | {}",
-                    ps.btc_price, btc_dir, btc_change,
-                    ps.eth_price, eth_dir, eth_change,
-                    ps.sol_price, sol_dir, sol_change,
-                    ps.xrp_price, xrp_dir, xrp_change,
+                    "📈 BTC ${:.0} v{}{:+.3}% | ETH ${:.0} v{}{:+.3}% | SOL ${:.1} v{}{:+.3}% | XRP ${:.3} v{}{:+.3}% | T:{} O:{}{} | {}",
+                    ps.btc_price, btc_dir, btc_vel,
+                    ps.eth_price, eth_dir, eth_vel,
+                    ps.sol_price, sol_dir, sol_vel,
+                    ps.xrp_price, xrp_dir, xrp_vel,
                     state.trades_executed,
                     open_pos,
                     pnl_str,
