@@ -692,14 +692,21 @@ async fn execute_trade(
     creds: &PreparedCreds,
     signal: &ArbSignal,
 ) -> Result<String> {
-    // Calculate shares to buy
-    let shares = signal.recommended_size_usd / signal.buy_price;
+    // Round price to 2 decimals (required by Polymarket API)
+    let price = (signal.buy_price * 100.0).round() / 100.0;
+    
+    // Calculate shares to buy, round to 2 decimals
+    let shares = signal.recommended_size_usd / price;
+    let size = (shares * 100.0).floor() / 100.0;
+    
+    // Ensure minimum size
+    let size = if size < 1.0 { 1.0 } else { size };
     
     // Build order
     let order = OrderArgs {
         token_id: signal.token_id.clone(),
-        price: signal.buy_price,
-        size: (shares * 100.0).floor() / 100.0,  // Round to 2 decimals
+        price,
+        size,
         side: "BUY".to_string(),
         fee_rate_bps: None,
         nonce: Some(0),
