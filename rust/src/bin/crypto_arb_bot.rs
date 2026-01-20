@@ -352,10 +352,10 @@ async fn main() -> Result<()> {
     let mut best_xrp_score = f64::MAX;
     
     for mut market in markets {
-        // Update market prices from CLOB
-        if let Err(e) = update_market_prices(&mut market).await {
-            println!("⚠️ Failed to get prices for {}: {}", market.description, e);
-            continue;
+        // Try to update market prices from CLOB orderbook
+        // If it fails (fresh markets don't have orderbooks yet), use the fallback prices from Gamma API
+        if let Err(_e) = update_market_prices(&mut market).await {
+            // Fresh markets use the initial 50¢ prices from Gamma API - that's fine
         }
         
         let yes_price = market.yes_ask;
