@@ -1124,6 +1124,22 @@ pub async fn fetch_live_crypto_markets() -> Result<Vec<LiveCryptoMarket>> {
                     continue;
                 }
                 
+                // Check if market has expired based on end_date_iso
+                let end_date_iso = market.get("end_date_iso")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                
+                if !end_date_iso.is_empty() {
+                    // Parse ISO 8601 timestamp and check if it's in the future
+                    if let Ok(end_time) = chrono::DateTime::parse_from_rfc3339(end_date_iso) {
+                        let now = chrono::Utc::now();
+                        if end_time < now {
+                            // Market has expired, skip it
+                            continue;
+                        }
+                    }
+                }
+                
                 // Determine market type for logging
                 let market_type = if slug.contains("-15m-") {
                     "15m"
