@@ -361,11 +361,11 @@ async fn main() -> Result<()> {
         let yes_price = market.yes_ask;
         let distance_from_50 = (yes_price - 0.50).abs();
         
-        // Priority scoring: prefer 15m markets, then shorter intervals
-        // 15m = 0, 4h = 1, daily = 2, then add distance from 50%
+        // Priority scoring: prefer 4h markets (longer trading window), then 15m, then daily
+        // 4h = 0, 15m = 1, daily = 2, then add distance from 50%
         let interval_priority = match market.interval_minutes {
-            15 => 0.0,
-            240 => 1.0,  // 4 hours
+            240 => 0.0,  // 4 hours - BEST (long trading window)
+            15 => 1.0,   // 15m - SECOND (very short trading window)
             _ => 2.0,    // daily or other
         };
         let score = interval_priority + distance_from_50;
