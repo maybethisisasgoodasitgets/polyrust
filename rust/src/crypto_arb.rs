@@ -789,6 +789,8 @@ impl CryptoArbEngine {
     /// Check for arbitrage opportunity on a specific asset's market
     /// VELOCITY-BASED: Reacts to quick price moves over last few seconds
     pub async fn check_opportunity_for_asset(&self, asset: CryptoAsset) -> Option<ArbSignal> {
+        let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
+        
         let market = match asset {
             CryptoAsset::BTC => self.btc_market.as_ref()?,
             CryptoAsset::ETH => self.eth_market.as_ref()?,
@@ -801,6 +803,7 @@ impl CryptoArbEngine {
         // Get current price
         let current_price = state.current_price(asset);
         if current_price == 0.0 {
+            println!("   ⚠️ {} check skipped: no price data", asset_name);
             return None;
         }
         
