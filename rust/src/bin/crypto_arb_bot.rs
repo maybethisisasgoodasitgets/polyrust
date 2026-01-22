@@ -477,8 +477,6 @@ async fn main() -> Result<()> {
                         continue;  // Already have an open position for this asset
                     }
                     
-                    println!("🎰 SIGNAL: {}", signal);
-                    
                     let asset_name = match signal.asset {
                         CryptoAsset::BTC => "BTC",
                         CryptoAsset::ETH => "ETH",
@@ -498,25 +496,62 @@ async fn main() -> Result<()> {
                         _ => "daily"
                     };
                     
+                    // === SAFETY CHECK: Validate real orderbook prices before trading ===
+                    // Fetch actual market prices to ensure they're reasonable
+                    let mut validated_signal = signal.clone();
+                    if let Some(mut market) = engine.get_market(signal.asset).cloned() {
+                        if let Err(e) = update_market_prices(&mut market).await {
+                            println!("   ⚠️ {} signal blocked: orderbook not available - {}", asset_name, e);
+                            continue;
+                        }
+                        
+                        // Get the actual price we'd be buying at
+                        let real_entry_price = if validated_signal.bet_up {
+                            market.yes_ask
+                        } else {
+                            market.no_ask
+                        };
+                        
+                        // SAFETY: Don't trade if real price is too high (> 90¢)
+                        // At 90¢+, there's almost no edge left even if signal is strong
+                        const MAX_SAFE_ENTRY: f64 = 0.90;
+                        if real_entry_price > MAX_SAFE_ENTRY {
+                            println!("   🛑 {} signal blocked: real orderbook price {:.2}¢ > max safe {:.0}¢", 
+                                asset_name, real_entry_price * 100.0, MAX_SAFE_ENTRY * 100.0);
+                            continue;
+                        }
+                        
+                        // Update signal with real price
+                        validated_signal.buy_price = real_entry_price;
+                        
+                        println!("   ✅ {} orderbook validated: real price {:.2}¢ (was {:.2}¢ from Gamma)", 
+                            asset_name, real_entry_price * 100.0, signal.buy_price * 100.0);
+                    } else {
+                        println!("   ⚠️ {} signal blocked: no market data available", asset_name);
+                        continue;
+                    }
+                    
+                    println!("🎰 SIGNAL: {}", validated_signal);
+                    
                     if cfg.mock_trading {
                         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
                         println!("   📝 [MOCK TRADE] {}", timestamp);
                         println!("      Market: {} ({})", market_desc, market_type);
                         println!("      Asset: {}", asset_name);
-                        println!("      Direction: {}", if signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
-                        println!("      {} Price: ${:.2} ({:+.3}% move)", asset_name, signal.crypto_price, signal.price_change_pct);
+                        println!("      Direction: {}", if validated_signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" });
+                        println!("      {} Price: ${:.2} ({:+.3}% move)", asset_name, validated_signal.crypto_price, validated_signal.price_change_pct);
                         println!("      Entry Price: {:.2}¢ | Edge: {:.1}% | Confidence: {}%", 
-                            signal.buy_price * 100.0, signal.edge_pct, signal.confidence);
-                        println!("      Position Size: ${:.2}", signal.recommended_size_usd);
+                            validated_signal.buy_price * 100.0, validated_signal.edge_pct, validated_signal.confidence);
+                        println!("      Position Size: ${:.2}", validated_signal.recommended_size_usd);
                         println!("      Exit Strategy: TP +{}% | SL {}% | Time {}% of interval", 
                             TAKE_PROFIT_PCT, STOP_LOSS_PCT, (MAX_HOLD_MULTIPLIER * 100.0) as i32);
                         println!("      ---");
-                        state.record_trade(&signal, market_desc, interval_mins);
+                        state.record_trade(&validated_signal, market_desc, interval_mins);
                     } else if let (Some(client), Some(creds)) = (&client, &creds) {
-                        match execute_trade(client, creds, &signal).await {
+                        match execute_trade(client, creds, &validated_signal).await {
                             Ok(result) => {
                                 println!("   ✅ Trade executed: {}", result);
-                                state.record_trade(&signal, market_desc, interval_mins);
+                                state.record_trade(&validated_signal, market_desc, interval_mins);
                             }
                             Err(e) => {
                                 println!("   ❌ Trade failed: {}", e);
