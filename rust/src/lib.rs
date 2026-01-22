@@ -28,6 +28,7 @@ pub mod soccer_markets;
 pub mod settings;
 pub mod models;
 pub mod crypto_arb;
+pub mod telegram;
 
 #[cfg(test)]
 mod resubmit_tests;

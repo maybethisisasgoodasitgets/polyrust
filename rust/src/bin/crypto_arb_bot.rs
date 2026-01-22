@@ -24,6 +24,7 @@ use pm_whale_follower::crypto_arb::{
     MIN_PRICE_MOVE_PCT, MAX_BUY_PRICE, MIN_EDGE_PCT,
 };
 use pm_whale_follower::{OrderArgs, RustClobClient, PreparedCreds};
+use pm_whale_follower::telegram::TelegramNotifier;
 use std::env;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
@@ -243,6 +244,11 @@ async fn main() -> Result<()> {
     println!("║  • Min Edge: {:.1}%                                         ║", MIN_EDGE_PCT);
     println!("╚════════════════════════════════════════════════════════════╝");
     println!();
+    
+    // Initialize Telegram notifications
+    let telegram = TelegramNotifier::new();
+    let mode = if cfg.mock_trading { "MOCK (paper trading)" } else { "LIVE ⚠️ REAL MONEY" };
+    telegram.notify_startup(mode).await;
     
     // Initialize trading client (only needed for live trading)
     let (client, creds) = if !cfg.mock_trading {
@@ -484,6 +490,10 @@ async fn main() -> Result<()> {
                         CryptoAsset::XRP => "XRP",
                     };
                     
+                    // Notify velocity signal detected
+                    let direction = if signal.bet_up { "UP" } else { "DOWN" };
+                    telegram.notify_signal(asset_name, signal.price_change_pct, direction).await;
+                    
                     // Get market info for this asset
                     let market_info = engine.get_market(signal.asset);
                     let market_desc = market_info.map(|m| m.description.as_str()).unwrap_or("Unknown");
@@ -501,7 +511,9 @@ async fn main() -> Result<()> {
                     let mut validated_signal = signal.clone();
                     if let Some(mut market) = engine.get_market(signal.asset).cloned() {
                         if let Err(e) = update_market_prices(&mut market).await {
-                            println!("   ⚠️ {} signal blocked: orderbook not available - {}", asset_name, e);
+                            let reason = format!("Orderbook not available - {}", e);
+                            println!("   ⚠️ {} signal blocked: {}", asset_name, reason);
+                            telegram.notify_blocked(asset_name, &reason).await;
                             continue;
                         }
                         
@@ -516,8 +528,9 @@ async fn main() -> Result<()> {
                         // At 90¢+, there's almost no edge left even if signal is strong
                         const MAX_SAFE_ENTRY: f64 = 0.90;
                         if real_entry_price > MAX_SAFE_ENTRY {
-                            println!("   🛑 {} signal blocked: real orderbook price {:.2}¢ > max safe {:.0}¢", 
-                                asset_name, real_entry_price * 100.0, MAX_SAFE_ENTRY * 100.0);
+                            let reason = format!("Real price {:.2}¢ > max safe {:.0}¢", real_entry_price * 100.0, MAX_SAFE_ENTRY * 100.0);
+                            println!("   🛑 {} signal blocked: {}", asset_name, reason);
+                            telegram.notify_blocked(asset_name, &reason).await;
                             continue;
                         }
                         
@@ -527,7 +540,9 @@ async fn main() -> Result<()> {
                         println!("   ✅ {} orderbook validated: real price {:.2}¢ (was {:.2}¢ from Gamma)", 
                             asset_name, real_entry_price * 100.0, signal.buy_price * 100.0);
                     } else {
-                        println!("   ⚠️ {} signal blocked: no market data available", asset_name);
+                        let reason = "No market data available";
+                        println!("   ⚠️ {} signal blocked: {}", asset_name, reason);
+                        telegram.notify_blocked(asset_name, reason).await;
                         continue;
                     }
                     
@@ -547,14 +562,20 @@ async fn main() -> Result<()> {
                             TAKE_PROFIT_PCT, STOP_LOSS_PCT, (MAX_HOLD_MULTIPLIER * 100.0) as i32);
                         println!("      ---");
                         state.record_trade(&validated_signal, market_desc, interval_mins);
+                        telegram.notify_trade(asset_name, if validated_signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" }, 
+                            validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc).await;
                     } else if let (Some(client), Some(creds)) = (&client, &creds) {
                         match execute_trade(client, creds, &validated_signal).await {
                             Ok(result) => {
                                 println!("   ✅ Trade executed: {}", result);
                                 state.record_trade(&validated_signal, market_desc, interval_mins);
+                                telegram.notify_trade(asset_name, if validated_signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" }, 
+                                    validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc).await;
                             }
                             Err(e) => {
-                                println!("   ❌ Trade failed: {}", e);
+                                let error_msg = format!("{}", e);
+                                println!("   ❌ Trade failed: {}", error_msg);
+                                telegram.notify_failed(asset_name, &error_msg).await;
                             }
                         }
                     }
