@@ -351,12 +351,10 @@ async fn main() -> Result<()> {
     let mut best_xrp_market: Option<LiveCryptoMarket> = None;
     let mut best_xrp_score = f64::MAX;
     
-    for mut market in markets {
-        // Try to update market prices from CLOB orderbook
-        // If it fails (fresh markets don't have orderbooks yet), use the fallback prices from Gamma API
-        if let Err(_e) = update_market_prices(&mut market).await {
-            // Fresh markets use the initial 50¢ prices from Gamma API - that's fine
-        }
+    for market in markets {
+        // DON'T fetch orderbook prices here - use Gamma API prices (50¢) for selection
+        // We'll fetch real orderbook prices later when checking for velocity signals
+        // This prevents fresh markets from being filtered out due to "expired" orderbook prices
         
         let yes_price = market.yes_ask;
         let distance_from_50 = (yes_price - 0.50).abs();
