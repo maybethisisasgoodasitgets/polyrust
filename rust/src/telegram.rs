@@ -83,10 +83,15 @@ impl TelegramNotifier {
     }
     
     /// Send trade executed notification
-    pub async fn notify_trade(&self, asset: &str, direction: &str, entry_price: f64, size: f64, market: &str) {
+    pub async fn notify_trade(&self, asset: &str, direction: &str, entry_price: f64, size: f64, market: &str, is_mock: bool) {
+        let header = if is_mock {
+            "📝 <b>MOCK Trade Executed</b>"
+        } else {
+            "✅ <b>LIVE Trade Executed</b>"
+        };
         let msg = format!(
-            "✅ <b>Trade Executed</b>\n\nAsset: {}\nDirection: {}\nEntry: {:.2}¢\nSize: ${:.2}\nMarket: {}",
-            asset, direction, entry_price * 100.0, size, market
+            "{}\n\nAsset: {}\nDirection: {}\nEntry: {:.2}¢\nSize: ${:.2}\nMarket: {}",
+            header, asset, direction, entry_price * 100.0, size, market
         );
         let _ = self.send(&msg).await;
     }

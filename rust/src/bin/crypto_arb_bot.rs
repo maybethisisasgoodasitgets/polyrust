@@ -563,14 +563,14 @@ async fn main() -> Result<()> {
                         println!("      ---");
                         state.record_trade(&validated_signal, market_desc, interval_mins);
                         telegram.notify_trade(asset_name, if validated_signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" }, 
-                            validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc).await;
+                            validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc, true).await;
                     } else if let (Some(client), Some(creds)) = (&client, &creds) {
                         match execute_trade(client, creds, &validated_signal).await {
                             Ok(result) => {
                                 println!("   ✅ Trade executed: {}", result);
                                 state.record_trade(&validated_signal, market_desc, interval_mins);
                                 telegram.notify_trade(asset_name, if validated_signal.bet_up { "BUY YES (UP)" } else { "BUY NO (DOWN)" }, 
-                                    validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc).await;
+                                    validated_signal.buy_price, validated_signal.recommended_size_usd, market_desc, false).await;
                             }
                             Err(e) => {
                                 let error_msg = format!("{}", e);
@@ -791,15 +791,28 @@ async fn execute_trade(
     creds: &PreparedCreds,
     signal: &ArbSignal,
 ) -> Result<String> {
-    // Round price to 2 decimals (required by Polymarket API)
+    // Round price to 2 decimals (required by Polymarket API - maker amount max 2 decimals)
     let price = (signal.buy_price * 100.0).round() / 100.0;
     
-    // Calculate shares to buy, round to 2 decimals
+    // Calculate shares to buy
+    // Polymarket requires: maker amount max 2 decimals, taker amount max 4 decimals
+    // For buy orders: size is taker amount (max 4 decimals), price * size is maker amount (max 2 decimals)
     let shares = signal.recommended_size_usd / price;
-    let size = (shares * 100.0).floor() / 100.0;
     
-    // Ensure minimum size
+    // Round size to 4 decimals (taker amount)
+    let size = (shares * 10000.0).floor() / 10000.0;
+    
+    // Ensure minimum size and that price * size is valid (max 2 decimals for maker)
     let size = if size < 1.0 { 1.0 } else { size };
+    
+    // Validate maker amount (price * size) has max 2 decimals
+    let maker_amount = price * size;
+    let maker_rounded = (maker_amount * 100.0).round() / 100.0;
+    if (maker_amount - maker_rounded).abs() > 0.001 {
+        // Adjust size to make maker amount valid
+        let adjusted_size = (maker_rounded / price * 10000.0).floor() / 10000.0;
+        let size = adjusted_size.max(1.0);
+    }
     
     // Build order
     let order = OrderArgs {
@@ -824,7 +837,13 @@ async fn execute_trade(
             let resp = client.post_order_fast(body, &creds)?;
             let status = resp.status();
             let text = resp.text().unwrap_or_default();
-            Ok(format!("Status: {} - {}", status, text))
+            
+            // Check if order succeeded (2xx status code)
+            if !status.is_success() {
+                return Err(anyhow!("Order failed: {} - {}", status, text));
+            }
+            
+            Ok(format!("Order placed: {}", text))
         }
     }).await??;
     
