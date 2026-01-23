@@ -800,19 +800,25 @@ async fn execute_trade(
     let shares = signal.recommended_size_usd / price;
     
     // Round size to 4 decimals (taker amount)
-    let size = (shares * 10000.0).floor() / 10000.0;
+    let mut size = (shares * 10000.0).floor() / 10000.0;
     
-    // Ensure minimum size and that price * size is valid (max 2 decimals for maker)
-    let size = if size < 1.0 { 1.0 } else { size };
+    // Ensure minimum size
+    size = size.max(1.0);
     
-    // Validate maker amount (price * size) has max 2 decimals
-    let maker_amount = price * size;
+    // Now validate that maker amount (price * size) has max 2 decimals
+    // If not, we need to adjust size down to make it valid
+    let mut maker_amount = price * size;
     let maker_rounded = (maker_amount * 100.0).round() / 100.0;
+    
+    // If maker amount has too many decimals, adjust size to fix it
     if (maker_amount - maker_rounded).abs() > 0.001 {
-        // Adjust size to make maker amount valid
-        let adjusted_size = (maker_rounded / price * 10000.0).floor() / 10000.0;
-        let size = adjusted_size.max(1.0);
+        // Calculate what size would give us the rounded maker amount
+        size = (maker_rounded / price * 10000.0).floor() / 10000.0;
+        size = size.max(1.0);
+        maker_amount = price * size;
     }
+    
+    println!("   💰 Order details: price={:.4}, size={:.4}, maker_amount={:.4}", price, size, maker_amount);
     
     // Build order
     let order = OrderArgs {
@@ -848,4 +854,126 @@ async fn execute_trade(
     }).await??;
     
     Ok(result)
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Validates that price * size calculation has max 2 decimal places (maker amount)
+    fn validate_maker_amount(price: f64, size: f64) -> bool {
+        let maker_amount = price * size;
+        let rounded = (maker_amount * 100.0).round() / 100.0;
+        (maker_amount - rounded).abs() < 0.001
+    }
+
+    /// Validates that size has max 4 decimal places (taker amount)
+    fn validate_taker_amount(size: f64) -> bool {
+        let rounded = (size * 10000.0).round() / 10000.0;
+        (size - rounded).abs() < 0.0001
+    }
+
+    /// Simulates the decimal precision logic from execute_trade
+    fn calculate_valid_order_amounts(buy_price: f64, position_usd: f64) -> (f64, f64) {
+        // Round price to 2 decimals
+        let price = (buy_price * 100.0).round() / 100.0;
+        
+        // Calculate shares
+        let shares = position_usd / price;
+        
+        // Round size to 4 decimals (taker amount)
+        let mut size = (shares * 10000.0).floor() / 10000.0;
+        
+        // Ensure minimum size
+        size = size.max(1.0);
+        
+        // Validate maker amount has max 2 decimals
+        let mut maker_amount = price * size;
+        let maker_rounded = (maker_amount * 100.0).round() / 100.0;
+        
+        // If maker amount has too many decimals, adjust size
+        if (maker_amount - maker_rounded).abs() > 0.001 {
+            size = (maker_rounded / price * 10000.0).floor() / 10000.0;
+            size = size.max(1.0);
+            maker_amount = price * size;
+        }
+        
+        (price, size)
+    }
+
+    #[test]
+    fn test_decimal_precision_low_price() {
+        // Test with 3¢ entry (common for arbitrage)
+        let (price, size) = calculate_valid_order_amounts(0.03, 1.0);
+        
+        assert!(validate_taker_amount(size), "Size must have max 4 decimals");
+        assert!(validate_maker_amount(price, size), "Maker amount (price * size) must have max 2 decimals");
+        
+        println!("Low price test: price={:.4}, size={:.4}, maker_amount={:.4}", price, size, price * size);
+    }
+
+    #[test]
+    fn test_decimal_precision_medium_price() {
+        // Test with 50¢ entry
+        let (price, size) = calculate_valid_order_amounts(0.50, 1.0);
+        
+        assert!(validate_taker_amount(size), "Size must have max 4 decimals");
+        assert!(validate_maker_amount(price, size), "Maker amount (price * size) must have max 2 decimals");
+        
+        println!("Medium price test: price={:.4}, size={:.4}, maker_amount={:.4}", price, size, price * size);
+    }
+
+    #[test]
+    fn test_decimal_precision_high_price() {
+        // Test with 85¢ entry
+        let (price, size) = calculate_valid_order_amounts(0.85, 1.0);
+        
+        assert!(validate_taker_amount(size), "Size must have max 4 decimals");
+        assert!(validate_maker_amount(price, size), "Maker amount (price * size) must have max 2 decimals");
+        
+        println!("High price test: price={:.4}, size={:.4}, maker_amount={:.4}", price, size, price * size);
+    }
+
+    #[test]
+    fn test_decimal_precision_problematic_prices() {
+        // Test prices that might cause precision issues
+        let test_cases = vec![
+            0.03,  // 3¢
+            0.07,  // 7¢
+            0.11,  // 11¢
+            0.13,  // 13¢
+            0.17,  // 17¢
+            0.33,  // 33¢
+            0.67,  // 67¢
+        ];
+
+        for &price in &test_cases {
+            let (calc_price, size) = calculate_valid_order_amounts(price, 1.0);
+            
+            assert!(validate_taker_amount(size), 
+                "Price {:.2}¢: Size must have max 4 decimals, got size={:.6}", 
+                price * 100.0, size);
+            
+            assert!(validate_maker_amount(calc_price, size), 
+                "Price {:.2}¢: Maker amount must have max 2 decimals, got price={:.4}, size={:.4}, maker={:.6}", 
+                price * 100.0, calc_price, size, calc_price * size);
+        }
+    }
+
+    #[test]
+    fn test_decimal_precision_various_position_sizes() {
+        // Test different position sizes
+        let sizes = vec![1.0, 1.5, 2.0, 5.0, 10.0];
+        
+        for &pos_size in &sizes {
+            let (price, size) = calculate_valid_order_amounts(0.50, pos_size);
+            
+            assert!(validate_taker_amount(size), "Position ${:.2}: Size must have max 4 decimals", pos_size);
+            assert!(validate_maker_amount(price, size), "Position ${:.2}: Maker amount must have max 2 decimals", pos_size);
+        }
+    }
 }
