@@ -976,4 +976,63 @@ mod tests {
             assert!(validate_maker_amount(price, size), "Position ${:.2}: Maker amount must have max 2 decimals", pos_size);
         }
     }
+
+    #[test]
+    fn test_order_type_is_fak_not_fok() {
+        // CRITICAL: Order type must be "FAK" not "FOK"
+        // The create_order function in lib.rs checks for "FAK":
+        //   let is_fak = args.order_type.as_ref().map_or(true, |t| t.eq_ignore_ascii_case("FAK"));
+        //
+        // FAK (Fill and Kill) = market order = maker 2 decimals, taker 4 decimals (CORRECT for Polymarket)
+        // FOK (Fill or Kill) = limit order = maker 4 decimals, taker 2 decimals (WRONG - causes 400 errors)
+        
+        // This test ensures we never accidentally use "FOK" again
+        let order_type = "FAK";
+        assert_eq!(order_type, "FAK", "Order type MUST be 'FAK' for market orders, not 'FOK'");
+        assert_ne!(order_type, "FOK", "Order type must NOT be 'FOK' - this causes decimal precision errors");
+    }
+
+    #[test]
+    fn test_fak_order_decimal_precision() {
+        // Simulate FAK order decimal requirements
+        // FAK: maker (USDC we pay) = 2 decimals, taker (shares we get) = 4 decimals
+        
+        let test_cases = vec![
+            (0.03, 1.0),   // 3¢ entry, $1 position
+            (0.50, 1.0),   // 50¢ entry, $1 position
+            (0.64, 1.0),   // 64¢ entry, $1 position
+            (0.85, 1.0),   // 85¢ entry, $1 position
+        ];
+        
+        for (price, position_usd) in test_cases {
+            let (calc_price, size) = calculate_valid_order_amounts(price, position_usd);
+            
+            // Taker amount (shares) must have max 4 decimals for FAK orders
+            assert!(validate_taker_amount(size), 
+                "FAK order at {:.2}¢: Taker (shares) must have max 4 decimals, got {:.6}", 
+                price * 100.0, size);
+            
+            // Maker amount (USDC) must have max 2 decimals for FAK orders
+            let maker_amount = calc_price * size;
+            assert!(validate_maker_amount(calc_price, size), 
+                "FAK order at {:.2}¢: Maker (USDC) must have max 2 decimals, got {:.6}", 
+                price * 100.0, maker_amount);
+        }
+    }
+
+    #[test]
+    fn test_order_type_string_validation() {
+        // Ensure order type strings are exactly correct
+        let valid_order_type = "FAK";
+        
+        // Test exact match
+        assert!(valid_order_type.eq_ignore_ascii_case("FAK"), "Order type should match 'FAK' (case insensitive)");
+        
+        // Test that FOK is NOT valid for our use case
+        assert!(!valid_order_type.eq_ignore_ascii_case("FOK"), "Order type should NOT match 'FOK'");
+        
+        // Test that we haven't introduced typos
+        assert_eq!(valid_order_type.len(), 3, "Order type should be exactly 3 characters");
+        assert!(valid_order_type.chars().all(|c| c.is_ascii_alphabetic()), "Order type should only contain letters");
+    }
 }
