@@ -830,7 +830,7 @@ async fn execute_trade(
         nonce: Some(0),
         expiration: None,
         taker: None,
-        order_type: Some("FOK".to_string()),  // Fill or Kill for speed
+        order_type: Some("FAK".to_string()),  // Fill and Kill (market order) - uses correct decimal precision
     };
     
     // Execute via blocking call (TODO: make async)
@@ -839,7 +839,7 @@ async fn execute_trade(
         let creds = creds.clone();
         move || -> Result<String> {
             let signed = client.create_order(order)?;
-            let body = signed.post_body(&creds.api_key, "FOK");
+            let body = signed.post_body(&creds.api_key, "FAK");
             let resp = client.post_order_fast(body, &creds)?;
             let status = resp.status();
             let text = resp.text().unwrap_or_default();
