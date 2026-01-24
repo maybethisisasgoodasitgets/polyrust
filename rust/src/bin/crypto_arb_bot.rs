@@ -797,6 +797,7 @@ async fn execute_trade(
     // Calculate shares to buy
     // Polymarket requires: maker amount max 2 decimals, taker amount max 4 decimals
     // For buy orders: size is taker amount (max 4 decimals), price * size is maker amount (max 2 decimals)
+    // ALSO: Polymarket requires minimum $1 order size (maker amount >= 1.0)
     let shares = signal.recommended_size_usd / price;
     
     // Round size to 4 decimals (taker amount)
@@ -816,6 +817,26 @@ async fn execute_trade(
         size = (maker_rounded / price * 10000.0).floor() / 10000.0;
         size = size.max(1.0);
         maker_amount = price * size;
+    }
+    
+    // CRITICAL: Ensure maker amount meets Polymarket's $1 minimum
+    // After rounding, we might have $0.99 which fails validation
+    const MIN_ORDER_USD: f64 = 1.0;
+    if maker_amount < MIN_ORDER_USD {
+        // Need to increase size to reach $1 minimum
+        // Calculate minimum size needed: $1 / price, rounded up to 4 decimals
+        let min_size = (MIN_ORDER_USD / price * 10000.0).ceil() / 10000.0;
+        size = min_size;
+        maker_amount = price * size;
+        
+        // Verify maker amount is now valid (>= $1 and max 2 decimals)
+        let maker_rounded = (maker_amount * 100.0).round() / 100.0;
+        if (maker_amount - maker_rounded).abs() > 0.001 {
+            // Still has too many decimals, round up the maker amount and recalc size
+            let target_maker = ((maker_amount * 100.0).ceil() / 100.0).max(MIN_ORDER_USD);
+            size = (target_maker / price * 10000.0).ceil() / 10000.0;
+            maker_amount = price * size;
+        }
     }
     
     println!("   💰 Order details: price={:.4}, size={:.4}, maker_amount={:.4}", price, size, maker_amount);
@@ -900,6 +921,21 @@ mod tests {
             size = (maker_rounded / price * 10000.0).floor() / 10000.0;
             size = size.max(1.0);
             maker_amount = price * size;
+        }
+        
+        // CRITICAL: Ensure maker amount meets Polymarket's $1 minimum
+        const MIN_ORDER_USD: f64 = 1.0;
+        if maker_amount < MIN_ORDER_USD {
+            let min_size = (MIN_ORDER_USD / price * 10000.0).ceil() / 10000.0;
+            size = min_size;
+            maker_amount = price * size;
+            
+            let maker_rounded = (maker_amount * 100.0).round() / 100.0;
+            if (maker_amount - maker_rounded).abs() > 0.001 {
+                let target_maker = ((maker_amount * 100.0).ceil() / 100.0).max(MIN_ORDER_USD);
+                size = (target_maker / price * 10000.0).ceil() / 10000.0;
+                maker_amount = price * size;
+            }
         }
         
         (price, size)
@@ -1034,5 +1070,108 @@ mod tests {
         // Test that we haven't introduced typos
         assert_eq!(valid_order_type.len(), 3, "Order type should be exactly 3 characters");
         assert!(valid_order_type.chars().all(|c| c.is_ascii_alphabetic()), "Order type should only contain letters");
+    }
+
+    #[test]
+    fn test_minimum_order_amount_1_dollar() {
+        // CRITICAL: Polymarket requires minimum $1 order size
+        // This was the bug that caused: "invalid amount for a marketable BUY order ($0.99), min size: $1"
+        
+        const MIN_ORDER_USD: f64 = 1.0;
+        
+        // Test various prices that could cause sub-$1 orders after rounding
+        let problematic_prices = vec![
+            0.64,  // This was causing $0.99 orders in production
+            0.67,  // 67¢
+            0.33,  // 33¢
+            0.99,  // 99¢ (close to market ceiling)
+        ];
+        
+        for price in problematic_prices {
+            let (calc_price, size) = calculate_valid_order_amounts(price, 1.0);
+            let maker_amount = calc_price * size;
+            
+            assert!(maker_amount >= MIN_ORDER_USD, 
+                "Order at {:.2}¢ has maker_amount ${:.4} which is below $1 minimum. Price={:.4}, Size={:.4}", 
+                price * 100.0, maker_amount, calc_price, size);
+            
+            println!("Price {:.2}¢: maker_amount=${:.4} (price={:.4}, size={:.4}) ✓", 
+                price * 100.0, maker_amount, calc_price, size);
+        }
+    }
+
+    #[test]
+    fn test_minimum_order_amount_edge_cases() {
+        // Test edge cases where rounding could drop below $1
+        const MIN_ORDER_USD: f64 = 1.0;
+        
+        let test_cases = vec![
+            (0.64, 1.0, "64¢ price that caused $0.99 orders"),
+            (0.51, 1.0, "51¢ price with potential rounding issue"),
+            (0.34, 1.0, "34¢ price with 3 shares"),
+            (0.99, 1.0, "99¢ high price near ceiling"),
+        ];
+        
+        for (price, pos_usd, description) in test_cases {
+            let (calc_price, size) = calculate_valid_order_amounts(price, pos_usd);
+            let maker_amount = calc_price * size;
+            
+            // Verify >= $1
+            assert!(maker_amount >= MIN_ORDER_USD, 
+                "{}: maker_amount ${:.4} is below $1 minimum", 
+                description, maker_amount);
+            
+            // Verify decimal precision is still valid
+            assert!(validate_taker_amount(size), 
+                "{}: taker amount has too many decimals", description);
+            assert!(validate_maker_amount(calc_price, size), 
+                "{}: maker amount has too many decimals", description);
+            
+            println!("{}: ${:.4} ✓", description, maker_amount);
+        }
+    }
+
+    #[test]
+    fn test_minimum_order_with_various_position_sizes() {
+        // Test that $1 minimum is enforced across different position sizes
+        const MIN_ORDER_USD: f64 = 1.0;
+        
+        let position_sizes = vec![1.0, 1.5, 2.0, 5.0];
+        let prices = vec![0.03, 0.50, 0.64, 0.85];
+        
+        for &pos_size in &position_sizes {
+            for &price in &prices {
+                let (calc_price, size) = calculate_valid_order_amounts(price, pos_size);
+                let maker_amount = calc_price * size;
+                
+                assert!(maker_amount >= MIN_ORDER_USD, 
+                    "Position ${:.2} at {:.2}¢: maker_amount ${:.4} below $1 minimum", 
+                    pos_size, price * 100.0, maker_amount);
+            }
+        }
+    }
+
+    #[test]
+    fn test_no_regression_099_dollar_orders() {
+        // This is the exact bug that was happening in production
+        // Order at 64¢ with $1 position was creating $0.99 orders
+        
+        const MIN_ORDER_USD: f64 = 1.0;
+        let price = 0.64;  // 64¢ entry price
+        let position = 1.0; // $1 position size
+        
+        let (calc_price, size) = calculate_valid_order_amounts(price, position);
+        let maker_amount = calc_price * size;
+        
+        // This must NOT be $0.99
+        assert_ne!((maker_amount * 100.0).round() / 100.0, 0.99, 
+            "BUG REGRESSION: Order is exactly $0.99 which will be rejected");
+        
+        // Must be >= $1.00
+        assert!(maker_amount >= MIN_ORDER_USD, 
+            "BUG REGRESSION: Order ${:.4} is below $1 minimum (was $0.99 in production)", 
+            maker_amount);
+        
+        println!("64¢ order test: ${:.4} (PASS - not $0.99) ✓", maker_amount);
     }
 }
