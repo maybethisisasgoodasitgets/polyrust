@@ -588,8 +588,19 @@ fn get_order_amounts_buy(size: f64, price: f64, _cfg: &RoundConfig, is_fak: bool
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_taker = round_down(size, shares_decimals);
     let raw_maker = round_down(raw_taker * price, usdc_decimals);
+    
+    // CRITICAL: Polymarket requires minimum $1 order size
+    // If rounding down caused maker amount to drop below $1, we need to round up instead
+    const MIN_ORDER_USD: f64 = 1.0;
+    let final_maker = if raw_maker < MIN_ORDER_USD {
+        // Round up to ensure we meet the minimum
+        let rounded_up = round_up(raw_taker * price, usdc_decimals);
+        rounded_up.max(MIN_ORDER_USD)
+    } else {
+        raw_maker
+    };
 
-    Ok((0, to_token_decimals(raw_maker)?, to_token_decimals(raw_taker)?))
+    Ok((0, to_token_decimals(final_maker)?, to_token_decimals(raw_taker)?))
 }
 
 fn get_order_amounts_sell(size: f64, price: f64, _cfg: &RoundConfig, is_fak: bool) -> Result<(i32, u128, u128)> {
@@ -605,6 +616,7 @@ fn get_order_amounts_sell(size: f64, price: f64, _cfg: &RoundConfig, is_fak: boo
 }
 
 #[inline(always)] fn round_down(x: f64, d: u32) -> f64 { let f = 10f64.powi(d as i32); (x * f).floor() / f }
+#[inline(always)] fn round_up(x: f64, d: u32) -> f64 { let f = 10f64.powi(d as i32); (x * f).ceil() / f }
 #[inline(always)] fn round_normal(x: f64, d: u32) -> f64 { let f = 10f64.powi(d as i32); (x * f).round() / f }
 
 #[inline(always)]
@@ -726,5 +738,113 @@ fn order_typed_data(chain_id: u64, exchange: &str, data: &OrderData) -> Result<T
         data.signature_type,
     );
     Ok(serde_json::from_str(&json_str)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_order_amounts_buy_minimum_1_dollar() {
+        // Test the exact bug that was happening: 64¢ price with ~1.56 shares = $0.99 when rounded down
+        // FAK orders: maker (USDC) 2 decimals, taker (shares) 4 decimals
+        
+        let test_cases = vec![
+            (1.5625, 0.64, "64¢ price - was causing $0.99 orders"),
+            (1.4926, 0.67, "67¢ price"),
+            (3.0303, 0.33, "33¢ price"),
+            (2.9412, 0.34, "34¢ price"),
+            (1.4706, 0.68, "68¢ price"),
+        ];
+        
+        for (size, price, description) in test_cases {
+            let result = get_order_amounts_buy(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+            assert!(result.is_ok(), "{}: Failed to calculate order amounts", description);
+            
+            let (side, maker_raw, taker_raw) = result.unwrap();
+            assert_eq!(side, 0, "BUY side should be 0");
+            
+            // Convert from u128 (6 decimals) to USD
+            let maker_usd = maker_raw as f64 / 1_000_000.0;
+            let taker_shares = taker_raw as f64 / 1_000_000.0;
+            
+            // CRITICAL: Maker amount must be >= $1.00
+            assert!(maker_usd >= 1.0, 
+                "{}: maker_amount ${:.4} is below $1 minimum (raw: {})", 
+                description, maker_usd, maker_raw);
+            
+            // Verify decimal precision
+            let maker_decimals = (maker_usd * 100.0).round() / 100.0;
+            assert!((maker_usd - maker_decimals).abs() < 0.001, 
+                "{}: maker_amount has more than 2 decimals: ${:.6}", 
+                description, maker_usd);
+            
+            let taker_decimals = (taker_shares * 10000.0).round() / 10000.0;
+            assert!((taker_shares - taker_decimals).abs() < 0.0001,
+                "{}: taker_amount has more than 4 decimals: {:.6}",
+                description, taker_shares);
+            
+            println!("{}: maker=${:.4}, taker={:.4} ✓", description, maker_usd, taker_shares);
+        }
+    }
+
+    #[test]
+    fn test_get_order_amounts_buy_no_regression_099() {
+        // This is the EXACT bug: 64¢ price, 1.5625 shares = $0.9984 rounds down to $0.99
+        let size = 1.5625;
+        let price = 0.64;
+        
+        let result = get_order_amounts_buy(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+        assert!(result.is_ok(), "Failed to calculate order amounts");
+        
+        let (_, maker_raw, _) = result.unwrap();
+        let maker_usd = maker_raw as f64 / 1_000_000.0;
+        
+        // This MUST NOT be $0.99
+        let maker_rounded = (maker_usd * 100.0).round() / 100.0;
+        assert_ne!(maker_rounded, 0.99, 
+            "BUG REGRESSION: Order is exactly $0.99 which will be rejected by Polymarket API");
+        
+        // Must be >= $1.00
+        assert!(maker_usd >= 1.0, 
+            "BUG REGRESSION: Order ${:.4} is below $1 minimum", 
+            maker_usd);
+        
+        println!("64¢ regression test: maker=${:.4} (PASS - not $0.99) ✓", maker_usd);
+    }
+
+    #[test]
+    fn test_round_down_and_round_up() {
+        // Test rounding helpers
+        assert_eq!(round_down(1.5678, 2), 1.56);
+        assert_eq!(round_down(1.5678, 4), 1.5678);
+        assert_eq!(round_down(0.999, 2), 0.99);
+        
+        assert_eq!(round_up(1.5678, 2), 1.57);
+        assert_eq!(round_up(1.5678, 4), 1.5678);
+        assert_eq!(round_up(0.999, 2), 1.00);
+        assert_eq!(round_up(0.991, 2), 1.00);
+    }
+
+    #[test]
+    fn test_get_order_amounts_buy_various_prices() {
+        // Test a range of prices to ensure $1 minimum is always met
+        let prices = vec![0.03, 0.10, 0.33, 0.34, 0.50, 0.64, 0.67, 0.68, 0.85, 0.99];
+        
+        for price in prices {
+            // Calculate size that would give ~$1 order
+            let size = 1.0 / price;
+            
+            let result = get_order_amounts_buy(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+            assert!(result.is_ok(), "Failed at price {:.2}¢", price * 100.0);
+            
+            let (_, maker_raw, _) = result.unwrap();
+            let maker_usd = maker_raw as f64 / 1_000_000.0;
+            
+            assert!(maker_usd >= 1.0, 
+                "Price {:.2}¢: maker_amount ${:.4} below $1 minimum", 
+                price * 100.0, maker_usd);
+        }
+    }
 }
 
