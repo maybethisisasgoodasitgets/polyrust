@@ -707,53 +707,6 @@ mod tests {
         assert_eq!(maker_amt, 116_880_000);
         assert_eq!(taker_amt, 52_596_000);  // GTD: 4 decimal USDC (52.596)
     }
-}
-
-fn order_typed_data(chain_id: u64, exchange: &str, data: &OrderData) -> Result<TypedData> {
-    let json_str = format!(
-        concat!(
-            r#"{{"types":{{"EIP712Domain":["#,
-            r#"{{"name":"name","type":"string"}},"#,
-            r#"{{"name":"version","type":"string"}},"#,
-            r#"{{"name":"chainId","type":"uint256"}},"#,
-            r#"{{"name":"verifyingContract","type":"address"}}"#,
-            r#"],"Order":["#,
-            r#"{{"name":"salt","type":"uint256"}},"#,
-            r#"{{"name":"maker","type":"address"}},"#,
-            r#"{{"name":"signer","type":"address"}},"#,
-            r#"{{"name":"taker","type":"address"}},"#,
-            r#"{{"name":"tokenId","type":"uint256"}},"#,
-            r#"{{"name":"makerAmount","type":"uint256"}},"#,
-            r#"{{"name":"takerAmount","type":"uint256"}},"#,
-            r#"{{"name":"expiration","type":"uint256"}},"#,
-            r#"{{"name":"nonce","type":"uint256"}},"#,
-            r#"{{"name":"feeRateBps","type":"uint256"}},"#,
-            r#"{{"name":"side","type":"uint8"}},"#,
-            r#"{{"name":"signatureType","type":"uint8"}}"#,
-            r#"]}},"primaryType":"Order","#,
-            r#""domain":{{"name":"Polymarket CTF Exchange","version":"1","chainId":{},"verifyingContract":"{}"}},"#,
-            r#""message":{{"salt":"{}","maker":"{}","signer":"{}","taker":"{}","tokenId":"{}","makerAmount":"{}","takerAmount":"{}","expiration":"{}","nonce":"{}","feeRateBps":"0","side":{},"signatureType":{}}}}}"#
-        ),
-        chain_id,
-        exchange,
-        data.salt,
-        data.maker,
-        data.signer,
-        data.taker,
-        data.token_id_u256,
-        data.maker_amount_u256,
-        data.taker_amount_u256,
-        data.expiration_u256,
-        data.nonce_u256,
-        data.side,
-        data.signature_type,
-    );
-    Ok(serde_json::from_str(&json_str)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn test_get_order_amounts_buy_minimum_1_dollar() {
@@ -935,5 +888,47 @@ mod tests {
                 price * 100.0, taker_usd);
         }
     }
+}
+
+fn order_typed_data(chain_id: u64, exchange: &str, data: &OrderData) -> Result<TypedData> {
+    let json_str = format!(
+        concat!(
+            r#"{{"types":{{"EIP712Domain":["#,
+            r#"{{"name":"name","type":"string"}},"#,
+            r#"{{"name":"version","type":"string"}},"#,
+            r#"{{"name":"chainId","type":"uint256"}},"#,
+            r#"{{"name":"verifyingContract","type":"address"}}"#,
+            r#"],"Order":["#,
+            r#"{{"name":"salt","type":"uint256"}},"#,
+            r#"{{"name":"maker","type":"address"}},"#,
+            r#"{{"name":"signer","type":"address"}},"#,
+            r#"{{"name":"taker","type":"address"}},"#,
+            r#"{{"name":"tokenId","type":"uint256"}},"#,
+            r#"{{"name":"makerAmount","type":"uint256"}},"#,
+            r#"{{"name":"takerAmount","type":"uint256"}},"#,
+            r#"{{"name":"expiration","type":"uint256"}},"#,
+            r#"{{"name":"nonce","type":"uint256"}},"#,
+            r#"{{"name":"feeRateBps","type":"uint256"}},"#,
+            r#"{{"name":"side","type":"uint8"}},"#,
+            r#"{{"name":"signatureType","type":"uint8"}}"#,
+            r#"]}},"primaryType":"Order","#,
+            r#""domain":{{"name":"Polymarket CTF Exchange","version":"1","chainId":{},"verifyingContract":"{}"}},"#,
+            r#""message":{{"salt":"{}","maker":"{}","signer":"{}","taker":"{}","tokenId":"{}","makerAmount":"{}","takerAmount":"{}","expiration":"{}","nonce":"{}","feeRateBps":"0","side":{},"signatureType":{}}}}}"#
+        ),
+        chain_id,
+        exchange,
+        data.salt,
+        data.maker,
+        data.signer,
+        data.taker,
+        data.token_id_u256,
+        data.maker_amount_u256,
+        data.taker_amount_u256,
+        data.expiration_u256,
+        data.nonce_u256,
+        data.side,
+        data.signature_type,
+    );
+    Ok(serde_json::from_str(&json_str)?)
 }
 
