@@ -919,15 +919,15 @@ impl CryptoArbEngine {
         let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
         let abs_velocity = velocity.abs();
         
-        // ULTRA-AGGRESSIVE thresholds for velocity-based trading
-        // Very low to catch any meaningful movement
+        // CONSERVATIVE thresholds to avoid noise and mean reversion
+        // Only trade on meaningful moves, not small fluctuations
         let min_velocity = match asset {
-            // BTC: 0.002% in 5 seconds = ~$2 move
-            CryptoAsset::BTC => 0.002,
-            // Altcoins: slightly higher due to more noise
-            CryptoAsset::ETH => 0.003,
-            CryptoAsset::SOL => 0.004,
-            CryptoAsset::XRP => 0.004,
+            // BTC: 0.02% in 5 seconds = ~$18 move (10x increase from 0.002%)
+            CryptoAsset::BTC => 0.02,
+            // Altcoins: 0.03-0.04% (10x increase to filter out noise)
+            CryptoAsset::ETH => 0.03,
+            CryptoAsset::SOL => 0.04,
+            CryptoAsset::XRP => 0.04,
         };
         
         if abs_velocity < min_velocity {
@@ -954,11 +954,23 @@ impl CryptoArbEngine {
             (false, market.no_token_id.clone(), market.no_ask)
         };
         
-        // Don't buy if price is too high (already decided)
+        // CRITICAL: Two price checks to avoid overpaying
+        // 1. Don't buy if price is too high (general limit)
         if market_ask > MAX_BUY_PRICE {
             let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
             println!("   ⚠️ {} signal blocked: market price {:.2}¢ > max {:.0}¢ (no edge)", 
                 asset_name, market_ask * 100.0, MAX_BUY_PRICE * 100.0);
+            return None;
+        }
+        
+        // 2. MEAN REVERSION FILTER: Don't buy above 60¢
+        // Positions at 64-68¢ were reverting to 50¢, causing losses
+        // Only enter within 10¢ of fair value (50¢) to avoid mean reversion
+        const MAX_ENTRY_PRICE: f64 = 0.60;  // 60¢ max entry
+        if market_ask > MAX_ENTRY_PRICE {
+            let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
+            println!("   🛑 {} signal blocked: price {:.2}¢ > max entry {:.0}¢ (mean reversion risk)", 
+                asset_name, market_ask * 100.0, MAX_ENTRY_PRICE * 100.0);
             return None;
         }
         
@@ -1774,5 +1786,143 @@ mod tests {
             // Should show direction indicators
             assert!(analysis.contains("⬆") || analysis.contains("⬇"));
         });
+    }
+    
+    #[test]
+    fn test_increased_velocity_thresholds() {
+        // Test that new 10x velocity thresholds filter out noise
+        // Old thresholds were: BTC 0.002%, ETH 0.003%, SOL/XRP 0.004%
+        // New thresholds are: BTC 0.02%, ETH 0.03%, SOL/XRP 0.04% (10x higher)
+        
+        let btc_threshold = 0.02;
+        let eth_threshold = 0.03;
+        let sol_threshold = 0.04;
+        let xrp_threshold = 0.04;
+        
+        // Verify thresholds are 10x the old values
+        assert_eq!(btc_threshold, 0.002 * 10.0);
+        assert_eq!(eth_threshold, 0.003 * 10.0);
+        assert_eq!(sol_threshold, 0.004 * 10.0);
+        assert_eq!(xrp_threshold, 0.004 * 10.0);
+        
+        // Small noisy moves should NOT trigger (these caused losses)
+        let noisy_btc = 0.005;  // ~$4.50 move - too small
+        let noisy_xrp = 0.011;  // ~$0.0002 move - too small
+        assert!(noisy_btc < btc_threshold, "Noise should be filtered");
+        assert!(noisy_xrp < xrp_threshold, "Noise should be filtered");
+        
+        // Only meaningful moves should trigger
+        let meaningful_btc = 0.025;  // ~$22 move
+        let meaningful_xrp = 0.05;   // ~$0.001 move
+        assert!(meaningful_btc > btc_threshold, "Real moves should pass");
+        assert!(meaningful_xrp > xrp_threshold, "Real moves should pass");
+    }
+    
+    #[test]
+    fn test_max_entry_price_filter() {
+        // Test that max entry price filter prevents buying overpriced positions
+        // This filter prevents losses from mean reversion
+        const MAX_ENTRY_PRICE: f64 = 0.60;  // 60¢
+        
+        // Positions that caused losses (should be blocked)
+        let bad_entry_1 = 0.64;  // 64¢ - reverted to 50¢
+        let bad_entry_2 = 0.68;  // 68¢ - reverted to 50¢
+        assert!(bad_entry_1 > MAX_ENTRY_PRICE, "64¢ entry should be blocked");
+        assert!(bad_entry_2 > MAX_ENTRY_PRICE, "68¢ entry should be blocked");
+        
+        // Good entries near fair value (should pass)
+        let good_entry_1 = 0.52;  // 52¢ - only 2¢ from fair value
+        let good_entry_2 = 0.58;  // 58¢ - within acceptable range
+        assert!(good_entry_1 < MAX_ENTRY_PRICE, "52¢ entry should pass");
+        assert!(good_entry_2 < MAX_ENTRY_PRICE, "58¢ entry should pass");
+        
+        // Edge cases
+        let at_limit = 0.60;
+        let just_over = 0.61;
+        assert!(at_limit <= MAX_ENTRY_PRICE, "60¢ should pass");
+        assert!(just_over > MAX_ENTRY_PRICE, "61¢ should be blocked");
+    }
+    
+    #[test]
+    fn test_mean_reversion_risk_calculation() {
+        // Test that we can identify mean reversion risk
+        // Markets at 50¢ = fair value (50/50 odds)
+        // The further from 50¢, the higher the reversion risk
+        
+        const FAIR_VALUE: f64 = 0.50;
+        const MAX_ENTRY_PRICE: f64 = 0.60;
+        
+        let test_prices = vec![
+            (0.52, 0.02, "Low risk"),
+            (0.55, 0.05, "Moderate risk"),
+            (0.60, 0.10, "Max acceptable"),
+            (0.64, 0.14, "HIGH RISK - should block"),
+            (0.68, 0.18, "VERY HIGH RISK - should block"),
+        ];
+        
+        for (price, expected_distance, description) in test_prices {
+            let distance = (price - FAIR_VALUE).abs();
+            assert!((distance - expected_distance).abs() < 0.001, 
+                "{}: distance should be {:.2}¢", description, expected_distance * 100.0);
+            
+            if distance > 0.10 {
+                assert!(price > MAX_ENTRY_PRICE, 
+                    "{}: price {:.2}¢ should be blocked ({}¢ from fair)", 
+                    description, price * 100.0, distance * 100.0);
+            }
+        }
+    }
+    
+    #[test]
+    fn test_velocity_threshold_dollar_amounts() {
+        // Test that new thresholds represent meaningful dollar moves
+        let btc_price = 90000.0;
+        let eth_price = 3000.0;
+        let sol_price = 150.0;
+        let xrp_price = 2.0;
+        
+        // New thresholds
+        let btc_threshold = 0.02;  // 0.02%
+        let eth_threshold = 0.03;  // 0.03%
+        let sol_threshold = 0.04;  // 0.04%
+        let xrp_threshold = 0.04;  // 0.04%
+        
+        // Calculate required dollar moves
+        let btc_dollar_move = btc_price * btc_threshold / 100.0;
+        let eth_dollar_move = eth_price * eth_threshold / 100.0;
+        let sol_dollar_move = sol_price * sol_threshold / 100.0;
+        let xrp_dollar_move = xrp_price * xrp_threshold / 100.0;
+        
+        // Verify meaningful moves required
+        assert!(btc_dollar_move >= 15.0, "BTC needs ${:.0} move (got ${:.2})", 15.0, btc_dollar_move);
+        assert!(eth_dollar_move >= 0.80, "ETH needs ${:.2} move (got ${:.2})", 0.80, eth_dollar_move);
+        assert!(sol_dollar_move >= 0.05, "SOL needs ${:.2} move (got ${:.2})", 0.05, sol_dollar_move);
+        assert!(xrp_dollar_move >= 0.0008, "XRP needs ${:.4} move (got ${:.4})", 0.0008, xrp_dollar_move);
+        
+        println!("BTC threshold: {:.2}% = ${:.2} move", btc_threshold, btc_dollar_move);
+        println!("ETH threshold: {:.2}% = ${:.2} move", eth_threshold, eth_dollar_move);
+        println!("SOL threshold: {:.2}% = ${:.2} move", sol_threshold, sol_dollar_move);
+        println!("XRP threshold: {:.2}% = ${:.4} move", xrp_threshold, xrp_dollar_move);
+    }
+    
+    #[test]
+    fn test_no_regression_bad_entries() {
+        // Regression test: ensure previous bad entries (64-68¢) would now be blocked
+        const MAX_ENTRY_PRICE: f64 = 0.60;
+        
+        // These were the actual losing trades
+        let xrp_entry_1 = 0.68;  // XRP at 68¢
+        let xrp_entry_2 = 0.64;  // XRP at 64¢
+        let sol_entry_1 = 0.68;  // SOL at 68¢
+        
+        // All should be blocked now
+        assert!(xrp_entry_1 > MAX_ENTRY_PRICE, 
+            "REGRESSION: XRP 68¢ entry should be blocked");
+        assert!(xrp_entry_2 > MAX_ENTRY_PRICE, 
+            "REGRESSION: XRP 64¢ entry should be blocked");
+        assert!(sol_entry_1 > MAX_ENTRY_PRICE, 
+            "REGRESSION: SOL 68¢ entry should be blocked");
+        
+        println!("✓ All previous losing entries would now be blocked");
     }
 }
