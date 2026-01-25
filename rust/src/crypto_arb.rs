@@ -786,6 +786,108 @@ impl CryptoArbEngine {
         signals
     }
     
+    /// Get detailed status analysis for why no signals are being generated
+    /// Returns a human-readable explanation of market conditions
+    pub async fn get_status_analysis(&self) -> String {
+        let state = self.price_state.read().await;
+        let mut analysis = String::new();
+        
+        analysis.push_str("📊 SIGNAL STATUS ANALYSIS\n");
+        analysis.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        
+        let assets = [
+            (CryptoAsset::BTC, "BTC", self.btc_market.as_ref(), 0.002),
+            (CryptoAsset::ETH, "ETH", self.eth_market.as_ref(), 0.003),
+            (CryptoAsset::SOL, "SOL", self.sol_market.as_ref(), 0.004),
+            (CryptoAsset::XRP, "XRP", self.xrp_market.as_ref(), 0.004),
+        ];
+        
+        let mut all_below_threshold = true;
+        let mut highest_pct = 0.0;
+        let mut closest_asset = "None";
+        
+        for (asset, name, market_opt, threshold) in assets.iter() {
+            let current_price = state.current_price(*asset);
+            if current_price == 0.0 {
+                analysis.push_str(&format!("   ⚠️  {}: No price data available\n", name));
+                continue;
+            }
+            
+            let velocity_5s = state.velocity_pct(*asset, 5);
+            let velocity_3s = state.velocity_pct(*asset, 3);
+            let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
+            let abs_velocity = velocity.abs();
+            
+            let pct_of_threshold = (abs_velocity / threshold) * 100.0;
+            if pct_of_threshold > highest_pct {
+                highest_pct = pct_of_threshold;
+                closest_asset = name;
+            }
+            
+            if abs_velocity >= *threshold {
+                all_below_threshold = false;
+            }
+            
+            let status_icon = if abs_velocity >= *threshold {
+                "✅"
+            } else if pct_of_threshold >= 70.0 {
+                "🟡"
+            } else if pct_of_threshold >= 40.0 {
+                "🟠"
+            } else {
+                "⚪"
+            };
+            
+            let dir_icon = if velocity >= 0.0 { "⬆" } else { "⬇" };
+            
+            analysis.push_str(&format!(
+                "   {} {}: ${:.2} {}{:+.4}% (need {:+.3}%) [{:.0}% of threshold]\n",
+                status_icon, name, current_price, dir_icon, velocity, threshold, pct_of_threshold
+            ));
+            
+            // Show market price if available
+            if let Some(market) = market_opt {
+                let yes_price = market.yes_ask;
+                let no_price = market.no_ask;
+                let price_status = if yes_price > MAX_BUY_PRICE || no_price > MAX_BUY_PRICE {
+                    "❌ TOO HIGH"
+                } else {
+                    "✓"
+                };
+                analysis.push_str(&format!(
+                    "      Market: YES={:.1}¢ NO={:.1}¢ {}\n",
+                    yes_price * 100.0, no_price * 100.0, price_status
+                ));
+            } else {
+                analysis.push_str("      Market: No active market\n");
+            }
+        }
+        
+        analysis.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        
+        // Summary and recommendation
+        if all_below_threshold {
+            if highest_pct < 40.0 {
+                analysis.push_str("📉 VERDICT: Market is VERY QUIET (all assets < 40% of threshold)\n");
+                analysis.push_str("   → Typical during: overnight hours, weekends, low volume periods\n");
+                analysis.push_str(&format!("   → Closest: {} at {:.0}% of threshold\n", closest_asset, highest_pct));
+                analysis.push_str("   → Recommendation: Wait for US trading hours or news events\n");
+            } else {
+                analysis.push_str("📊 VERDICT: Market is MODERATELY QUIET (some movement detected)\n");
+                analysis.push_str(&format!("   → {} is closest at {:.0}% of threshold\n", closest_asset, highest_pct));
+                analysis.push_str("   → Small moves detected but not strong enough for high-confidence signals\n");
+                analysis.push_str("   → Recommendation: Continue monitoring - volatility may pick up soon\n");
+            }
+        } else {
+            analysis.push_str("⚡ VERDICT: SIGNALS DETECTED but may be filtered by other checks\n");
+            analysis.push_str("   → Check: market prices not too high (< 85¢)\n");
+            analysis.push_str("   → Check: no existing open positions for those assets\n");
+            analysis.push_str("   → Check: orderbook validation passes\n");
+        }
+        
+        analysis
+    }
+    
     /// Check for arbitrage opportunity on a specific asset's market
     /// VELOCITY-BASED: Reacts to quick price moves over last few seconds
     pub async fn check_opportunity_for_asset(&self, asset: CryptoAsset) -> Option<ArbSignal> {
@@ -1493,5 +1595,191 @@ mod tests {
         
         assert!((state.eth_change_pct() - 0.5).abs() < 0.001);
         assert!(state.is_up(CryptoAsset::ETH));
+    }
+    
+    #[test]
+    fn test_status_analysis_quiet_market() {
+        // Test status analysis when market is very quiet (all below threshold)
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            {
+                let mut state = price_state.write().await;
+                state.btc_price = 90000.0;
+                state.eth_price = 3000.0;
+                state.sol_price = 150.0;
+                state.xrp_price = 2.0;
+                
+                // Add minimal price history (near-zero velocity)
+                for _ in 0..20 {
+                    state.btc_price_history.push_back((Instant::now(), 90000.0));
+                    state.eth_price_history.push_back((Instant::now(), 3000.0));
+                    state.sol_price_history.push_back((Instant::now(), 150.0));
+                    state.xrp_price_history.push_back((Instant::now(), 2.0));
+                }
+            }
+            
+            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should indicate quiet market
+            assert!(analysis.contains("VERY QUIET") || analysis.contains("MODERATELY QUIET"));
+            assert!(analysis.contains("BTC"));
+            assert!(analysis.contains("ETH"));
+            assert!(analysis.contains("SOL"));
+            assert!(analysis.contains("XRP"));
+            assert!(analysis.contains("% of threshold"));
+        });
+    }
+    
+    #[test]
+    fn test_status_analysis_with_movement() {
+        // Test status analysis when there's some movement
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            {
+                let mut state = price_state.write().await;
+                state.btc_price = 90000.0;
+                state.eth_price = 3000.0;
+                state.sol_price = 150.0;
+                state.xrp_price = 2.0;
+                
+                // Add price history with some movement for BTC
+                let now = Instant::now();
+                for i in 0..20 {
+                    let price = if i < 10 { 89950.0 } else { 90000.0 }; // 0.05% move
+                    state.btc_price_history.push_back((now, price));
+                    state.eth_price_history.push_back((now, 3000.0));
+                    state.sol_price_history.push_back((now, 150.0));
+                    state.xrp_price_history.push_back((now, 2.0));
+                }
+            }
+            
+            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should contain analysis output
+            assert!(analysis.contains("SIGNAL STATUS ANALYSIS"));
+            assert!(analysis.contains("VERDICT"));
+            assert!(analysis.len() > 200); // Should be a substantial report
+        });
+    }
+    
+    #[test]
+    fn test_status_analysis_no_price_data() {
+        // Test status analysis when no price data is available
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            // Leave all prices at 0.0 (default)
+            
+            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should indicate no price data
+            assert!(analysis.contains("No price data available"));
+        });
+    }
+    
+    #[test]
+    fn test_status_analysis_threshold_percentage() {
+        // Test that threshold percentages are calculated correctly
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            {
+                let mut state = price_state.write().await;
+                state.btc_price = 90000.0;
+                state.eth_price = 3000.0;
+                
+                let now = Instant::now();
+                // Create velocity of exactly 0.001% (50% of BTC threshold of 0.002%)
+                for i in 0..20 {
+                    let price = if i < 10 { 89991.0 } else { 90000.0 }; // 0.01% move over 10 samples
+                    state.btc_price_history.push_back((now, price));
+                    state.eth_price_history.push_back((now, 3000.0));
+                }
+            }
+            
+            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should show percentage of threshold
+            assert!(analysis.contains("% of threshold"));
+            // Should show icons indicating status levels
+            assert!(analysis.contains("⚪") || analysis.contains("🟠") || analysis.contains("🟡") || analysis.contains("✅"));
+        });
+    }
+    
+    #[test]
+    fn test_status_analysis_market_price_check() {
+        // Test that market prices are checked and displayed
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            {
+                let mut state = price_state.write().await;
+                state.btc_price = 90000.0;
+                
+                let now = Instant::now();
+                for _ in 0..20 {
+                    state.btc_price_history.push_back((now, 90000.0));
+                }
+            }
+            
+            let mut engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            
+            // Add a market with high prices
+            engine.btc_market = Some(LiveCryptoMarket {
+                condition_id: "test".to_string(),
+                question_id: "test".to_string(),
+                description: "Test Market".to_string(),
+                yes_token_id: "123".to_string(),
+                no_token_id: "456".to_string(),
+                yes_ask: 0.90, // High price - should be flagged
+                no_ask: 0.15,
+                asset: CryptoAsset::BTC,
+                interval_minutes: 15,
+            });
+            
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should show market prices
+            assert!(analysis.contains("Market: YES="));
+            assert!(analysis.contains("NO="));
+            // Should flag high prices
+            assert!(analysis.contains("TOO HIGH") || analysis.contains("✓"));
+        });
+    }
+    
+    #[test]
+    fn test_status_analysis_direction_indicators() {
+        // Test that up/down direction indicators work correctly
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            {
+                let mut state = price_state.write().await;
+                state.btc_price = 90100.0; // Higher price (up)
+                state.eth_price = 2990.0;  // Lower price (down)
+                
+                let now = Instant::now();
+                for i in 0..20 {
+                    // BTC trending up
+                    let btc_price = 90000.0 + (i as f64 * 5.0);
+                    // ETH trending down
+                    let eth_price = 3000.0 - (i as f64 * 0.5);
+                    state.btc_price_history.push_back((now, btc_price));
+                    state.eth_price_history.push_back((now, eth_price));
+                }
+            }
+            
+            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
+            let analysis = engine.get_status_analysis().await;
+            
+            // Should show direction indicators
+            assert!(analysis.contains("⬆") || analysis.contains("⬇"));
+        });
     }
 }

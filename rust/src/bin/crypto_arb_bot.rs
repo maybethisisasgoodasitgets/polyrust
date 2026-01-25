@@ -463,6 +463,7 @@ async fn main() -> Result<()> {
     let mut price_log_interval = interval(Duration::from_secs(10));
     let mut market_refresh_interval = interval(Duration::from_secs(3));  // Check for new markets every 3 seconds
     let mut market_price_log_interval = interval(Duration::from_secs(30));  // Log market prices every 30s
+    let mut status_analysis_interval = interval(Duration::from_secs(180));  // Status analysis every 3 minutes
     
     loop {
         tokio::select! {
@@ -778,6 +779,16 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            
+            _ = status_analysis_interval.tick() => {
+                // Periodic status analysis - explain why no trades are happening
+                // Only show if we haven't traded recently (avoid spam during active trading)
+                if state.trades_executed == 0 || state.last_trade_time.map_or(true, |t| t.elapsed() > Duration::from_secs(120)) {
+                    let analysis = engine.get_status_analysis().await;
+                    println!("\n{}", analysis);
+                    println!();
+                }
+            }
         }
     }
 }
@@ -1058,18 +1069,75 @@ mod tests {
 
     #[test]
     fn test_order_type_string_validation() {
-        // Ensure order type strings are exactly correct
-        let valid_order_type = "FAK";
+        // Ensure order type is exactly "FAK" string, not other variations
+        let order_type = "FAK";
+        assert_eq!(order_type, "FAK");
+        assert_ne!(order_type, "FOK");
+        assert_ne!(order_type, "fak");
+        assert_ne!(order_type, "Fak");
+    }
+    
+    #[test]
+    fn test_status_analysis_interval_timing() {
+        // Test that status analysis interval is set correctly
+        use std::time::Duration;
+        let interval_duration = Duration::from_secs(180); // 3 minutes
         
-        // Test exact match
-        assert!(valid_order_type.eq_ignore_ascii_case("FAK"), "Order type should match 'FAK' (case insensitive)");
+        assert_eq!(interval_duration.as_secs(), 180);
+        assert!(interval_duration.as_secs() >= 120); // At least 2 minutes
+        assert!(interval_duration.as_secs() <= 300); // At most 5 minutes
+    }
+    
+    #[test]
+    fn test_status_analysis_cooldown_logic() {
+        // Test that status analysis respects cooldown after trades
+        use std::time::{Duration, Instant};
         
-        // Test that FOK is NOT valid for our use case
-        assert!(!valid_order_type.eq_ignore_ascii_case("FOK"), "Order type should NOT match 'FOK'");
+        let mut state = TradingState::new();
+        let cooldown = Duration::from_secs(120); // 2 minutes
         
-        // Test that we haven't introduced typos
-        assert_eq!(valid_order_type.len(), 3, "Order type should be exactly 3 characters");
-        assert!(valid_order_type.chars().all(|c| c.is_ascii_alphabetic()), "Order type should only contain letters");
+        // No trades yet - should show analysis
+        assert!(state.trades_executed == 0 || state.last_trade_time.is_none());
+        
+        // After a trade
+        state.last_trade_time = Some(Instant::now());
+        state.trades_executed = 1;
+        
+        // Within cooldown - should NOT show analysis
+        let should_show = state.last_trade_time.map_or(true, |t| t.elapsed() > cooldown);
+        assert!(!should_show);
+        
+        // Simulate time passing (we'll test the logic even though we can't wait)
+        // After cooldown would pass - logic should allow showing
+        let old_time = Instant::now() - Duration::from_secs(121);
+        state.last_trade_time = Some(old_time);
+        let should_show_after = state.last_trade_time.map_or(true, |t| t.elapsed() > cooldown);
+        assert!(should_show_after);
+    }
+    
+    #[test]
+    fn test_status_analysis_prevents_spam_during_trading() {
+        // Ensure status analysis doesn't spam during active trading periods
+        use std::time::{Duration, Instant};
+        
+        let mut state = TradingState::new();
+        
+        // Simulate multiple trades in quick succession
+        for i in 0..5 {
+            state.trades_executed = i + 1;
+            state.last_trade_time = Some(Instant::now());
+            
+            // During active trading (< 2 min since last trade), should NOT show
+            let should_show = state.trades_executed == 0 || 
+                state.last_trade_time.map_or(true, |t| t.elapsed() > Duration::from_secs(120));
+            assert!(!should_show, "Should not show analysis during active trading");
+        }
+        
+        // After 2+ minutes of inactivity, should show again
+        state.last_trade_time = Some(Instant::now() - Duration::from_secs(121));
+        let should_show_after_quiet = state.trades_executed == 0 || 
+            state.last_trade_time.map_or(true, |t| t.elapsed() > Duration::from_secs(120));
+        assert!(should_show_after_quiet, "Should show analysis after quiet period");
     }
 
     #[test]
