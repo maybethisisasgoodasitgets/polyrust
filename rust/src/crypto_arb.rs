@@ -1602,9 +1602,9 @@ mod tests {
         // Test status analysis when market is very quiet (all below threshold)
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let engine = CryptoArbEngine::new(false, 10.0, 1.0);
             {
-                let mut state = price_state.write().await;
+                let mut state = engine.price_state.write().await;
                 state.btc_price = 90000.0;
                 state.eth_price = 3000.0;
                 state.sol_price = 150.0;
@@ -1619,7 +1619,6 @@ mod tests {
                 }
             }
             
-            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             let analysis = engine.get_status_analysis().await;
             
             // Should indicate quiet market
@@ -1637,9 +1636,9 @@ mod tests {
         // Test status analysis when there's some movement
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let engine = CryptoArbEngine::new(false, 10.0, 1.0);
             {
-                let mut state = price_state.write().await;
+                let mut state = engine.price_state.write().await;
                 state.btc_price = 90000.0;
                 state.eth_price = 3000.0;
                 state.sol_price = 150.0;
@@ -1656,7 +1655,6 @@ mod tests {
                 }
             }
             
-            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             let analysis = engine.get_status_analysis().await;
             
             // Should contain analysis output
@@ -1671,10 +1669,9 @@ mod tests {
         // Test status analysis when no price data is available
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let engine = CryptoArbEngine::new(false, 10.0, 1.0);
             // Leave all prices at 0.0 (default)
             
-            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             let analysis = engine.get_status_analysis().await;
             
             // Should indicate no price data
@@ -1687,9 +1684,9 @@ mod tests {
         // Test that threshold percentages are calculated correctly
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let engine = CryptoArbEngine::new(false, 10.0, 1.0);
             {
-                let mut state = price_state.write().await;
+                let mut state = engine.price_state.write().await;
                 state.btc_price = 90000.0;
                 state.eth_price = 3000.0;
                 
@@ -1702,7 +1699,6 @@ mod tests {
                 }
             }
             
-            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             let analysis = engine.get_status_analysis().await;
             
             // Should show percentage of threshold
@@ -1717,9 +1713,9 @@ mod tests {
         // Test that market prices are checked and displayed
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let mut engine = CryptoArbEngine::new(false, 10.0, 1.0);
             {
-                let mut state = price_state.write().await;
+                let mut state = engine.price_state.write().await;
                 state.btc_price = 90000.0;
                 
                 let now = Instant::now();
@@ -1727,8 +1723,6 @@ mod tests {
                     state.btc_price_history.push_back((now, 90000.0));
                 }
             }
-            
-            let mut engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             
             // Add a market with high prices
             engine.btc_market = Some(LiveCryptoMarket {
@@ -1758,9 +1752,9 @@ mod tests {
         // Test that up/down direction indicators work correctly
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let price_state = Arc::new(RwLock::new(PriceState::default()));
+            let engine = CryptoArbEngine::new(false, 10.0, 1.0);
             {
-                let mut state = price_state.write().await;
+                let mut state = engine.price_state.write().await;
                 state.btc_price = 90100.0; // Higher price (up)
                 state.eth_price = 2990.0;  // Lower price (down)
                 
@@ -1775,7 +1769,6 @@ mod tests {
                 }
             }
             
-            let engine = CryptoArbEngine::new(price_state, 10.0, 1.0);
             let analysis = engine.get_status_analysis().await;
             
             // Should show direction indicators
