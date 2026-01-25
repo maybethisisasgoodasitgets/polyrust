@@ -611,8 +611,19 @@ fn get_order_amounts_sell(size: f64, price: f64, _cfg: &RoundConfig, is_fak: boo
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_maker = round_down(size, shares_decimals);
     let raw_taker = round_down(raw_maker * price, usdc_decimals);
+    
+    // CRITICAL: Polymarket requires minimum $1 order size
+    // For SELL orders, taker is the USDC amount we receive
+    const MIN_ORDER_USD: f64 = 1.0;
+    let final_taker = if raw_taker < MIN_ORDER_USD {
+        // Round up to ensure we meet the minimum
+        let rounded_up = round_up(raw_maker * price, usdc_decimals);
+        rounded_up.max(MIN_ORDER_USD)
+    } else {
+        raw_taker
+    };
 
-    Ok((1, to_token_decimals(raw_maker)?, to_token_decimals(raw_taker)?))
+    Ok((1, to_token_decimals(raw_maker)?, to_token_decimals(final_taker)?))
 }
 
 #[inline(always)] fn round_down(x: f64, d: u32) -> f64 { let f = 10f64.powi(d as i32); (x * f).floor() / f }
@@ -844,6 +855,84 @@ mod tests {
             assert!(maker_usd >= 1.0, 
                 "Price {:.2}¢: maker_amount ${:.4} below $1 minimum", 
                 price * 100.0, maker_usd);
+        }
+    }
+
+    #[test]
+    fn test_get_order_amounts_sell_minimum_1_dollar() {
+        // Test SELL orders also enforce $1 minimum
+        // For SELL: taker is the USDC amount we receive
+        
+        let test_cases = vec![
+            (1.5625, 0.64, "64¢ price - could cause $0.99 on sell too"),
+            (1.4926, 0.67, "67¢ price"),
+            (3.0303, 0.33, "33¢ price"),
+            (2.9412, 0.34, "34¢ price"),
+        ];
+        
+        for (size, price, description) in test_cases {
+            let result = get_order_amounts_sell(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+            assert!(result.is_ok(), "{}: Failed to calculate sell order amounts", description);
+            
+            let (side, maker_raw, taker_raw) = result.unwrap();
+            assert_eq!(side, 1, "SELL side should be 1");
+            
+            // For SELL: taker is USDC we receive
+            let taker_usd = taker_raw as f64 / 1_000_000.0;
+            let maker_shares = maker_raw as f64 / 1_000_000.0;
+            
+            // CRITICAL: Taker amount (USDC) must be >= $1.00
+            assert!(taker_usd >= 1.0, 
+                "{}: taker_amount (USDC) ${:.4} is below $1 minimum (raw: {})", 
+                description, taker_usd, taker_raw);
+            
+            println!("{}: taker=${:.4}, maker={:.4} shares ✓", description, taker_usd, maker_shares);
+        }
+    }
+
+    #[test]
+    fn test_get_order_amounts_sell_no_regression_099() {
+        // Ensure SELL orders don't create $0.99 orders either
+        let size = 1.5625;
+        let price = 0.64;
+        
+        let result = get_order_amounts_sell(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+        assert!(result.is_ok(), "Failed to calculate sell order amounts");
+        
+        let (_, _, taker_raw) = result.unwrap();
+        let taker_usd = taker_raw as f64 / 1_000_000.0;
+        
+        // This MUST NOT be $0.99
+        let taker_rounded = (taker_usd * 100.0).round() / 100.0;
+        assert_ne!(taker_rounded, 0.99, 
+            "BUG REGRESSION: SELL order is exactly $0.99 which will be rejected");
+        
+        // Must be >= $1.00
+        assert!(taker_usd >= 1.0, 
+            "BUG REGRESSION: SELL order ${:.4} is below $1 minimum", 
+            taker_usd);
+        
+        println!("SELL 64¢ regression test: taker=${:.4} (PASS - not $0.99) ✓", taker_usd);
+    }
+
+    #[test]
+    fn test_get_order_amounts_sell_various_prices() {
+        // Test SELL orders across various prices
+        let prices = vec![0.03, 0.10, 0.33, 0.34, 0.50, 0.64, 0.67, 0.68, 0.85, 0.99];
+        
+        for price in prices {
+            // Calculate size that would give ~$1 order
+            let size = 1.0 / price;
+            
+            let result = get_order_amounts_sell(size, price, &RoundConfig { price: 2, size: 4, amount: 2 }, true);
+            assert!(result.is_ok(), "SELL failed at price {:.2}¢", price * 100.0);
+            
+            let (_, _, taker_raw) = result.unwrap();
+            let taker_usd = taker_raw as f64 / 1_000_000.0;
+            
+            assert!(taker_usd >= 1.0, 
+                "SELL at {:.2}¢: taker_amount ${:.4} below $1 minimum", 
+                price * 100.0, taker_usd);
         }
     }
 }
