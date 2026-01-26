@@ -796,10 +796,10 @@ impl CryptoArbEngine {
         analysis.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         
         let assets = [
-            (CryptoAsset::BTC, "BTC", self.btc_market.as_ref(), 0.002),
-            (CryptoAsset::ETH, "ETH", self.eth_market.as_ref(), 0.003),
-            (CryptoAsset::SOL, "SOL", self.sol_market.as_ref(), 0.004),
-            (CryptoAsset::XRP, "XRP", self.xrp_market.as_ref(), 0.004),
+            (CryptoAsset::BTC, "BTC", self.btc_market.as_ref(), 0.02),   // 10x from 0.002
+            (CryptoAsset::ETH, "ETH", self.eth_market.as_ref(), 0.03),   // 10x from 0.003
+            (CryptoAsset::SOL, "SOL", self.sol_market.as_ref(), 0.04),   // 10x from 0.004
+            (CryptoAsset::XRP, "XRP", self.xrp_market.as_ref(), 0.04),   // 10x from 0.004
         ];
         
         let mut all_below_threshold = true;
