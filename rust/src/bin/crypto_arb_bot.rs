@@ -787,6 +787,9 @@ async fn main() -> Result<()> {
                     let analysis = engine.get_status_analysis().await;
                     println!("\n{}", analysis);
                     println!();
+                    
+                    // Send to Telegram so user knows bot is alive and why no trades
+                    telegram.notify_status_analysis(&analysis).await;
                 }
             }
         }

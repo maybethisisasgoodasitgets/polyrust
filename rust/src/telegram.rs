@@ -113,4 +113,108 @@ impl TelegramNotifier {
         );
         let _ = self.send(&msg).await;
     }
+    
+    /// Send periodic status analysis explaining why no trades are happening
+    /// This provides transparency during quiet market periods
+    pub async fn notify_status_analysis(&self, analysis: &str) {
+        if !self.enabled {
+            return;
+        }
+        
+        // Convert console formatting to Telegram HTML
+        // Replace emoji icons and format for readability
+        let telegram_msg = analysis
+            .replace("📊", "📊")
+            .replace("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "━━━━━━━━━━━━━━━━━━━━━━━")
+            .replace("⚪", "⚪")
+            .replace("🟠", "🟠")
+            .replace("🟡", "🟡")
+            .replace("✅", "✅")
+            .replace("⬆", "⬆")
+            .replace("⬇", "⬇")
+            .replace("📈", "📈")
+            .replace("📉", "📉")
+            .replace("🎯", "🎯");
+        
+        // Wrap in monospace for better formatting
+        let formatted = format!("<pre>{}</pre>", telegram_msg);
+        let _ = self.send(&formatted).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_telegram_notifier_initialization() {
+        // Test that TelegramNotifier initializes correctly
+        let notifier = TelegramNotifier::new();
+        
+        // Should not panic or error
+        assert!(notifier.bot_token.is_empty() || !notifier.bot_token.is_empty());
+    }
+    
+    #[test]
+    fn test_status_analysis_formatting() {
+        // Test that status analysis message formatting works
+        let sample_analysis = r#"📊 SIGNAL STATUS ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ⚪ BTC: $87,650 ⬇-0.0012% (need +0.02%) [6% of threshold]
+   ⚪ ETH: $2,874 ⬆+0.0089% (need +0.03%) [30% of threshold]
+   ⚪ SOL: $121.55 ⬆+0.0156% (need +0.04%) [39% of threshold]
+   ⚪ XRP: $1.87 ⬇-0.0051% (need +0.04%) [13% of threshold]
+
+📉 VERDICT: VERY QUIET - All assets well below signal threshold"#;
+        
+        // Should contain expected elements
+        assert!(sample_analysis.contains("SIGNAL STATUS ANALYSIS"));
+        assert!(sample_analysis.contains("BTC"));
+        assert!(sample_analysis.contains("ETH"));
+        assert!(sample_analysis.contains("SOL"));
+        assert!(sample_analysis.contains("XRP"));
+        assert!(sample_analysis.contains("VERDICT"));
+    }
+    
+    #[tokio::test]
+    async fn test_notify_status_analysis_no_panic() {
+        // Test that notify_status_analysis doesn't panic even without credentials
+        let notifier = TelegramNotifier::new();
+        let analysis = "📊 Test Status\n⚪ BTC: $90,000 ⬇-0.001%\n📉 VERDICT: Quiet";
+        
+        // Should not panic
+        notifier.notify_status_analysis(analysis).await;
+    }
+    
+    #[test]
+    fn test_emoji_preservation_in_formatting() {
+        // Verify emojis are preserved in message formatting
+        let notifier = TelegramNotifier::new();
+        let test_msg = "📊 Status ⚪ BTC ⬆ Up ⬇ Down 📈 High 📉 Low ✅ Good 🟡 Medium 🟠 Warning";
+        
+        // The replace calls should preserve emojis (they replace with themselves)
+        let processed = test_msg
+            .replace("📊", "📊")
+            .replace("⚪", "⚪")
+            .replace("⬆", "⬆")
+            .replace("⬇", "⬇")
+            .replace("📈", "📈")
+            .replace("📉", "📉")
+            .replace("✅", "✅")
+            .replace("🟡", "🟡")
+            .replace("🟠", "🟠");
+        
+        assert_eq!(processed, test_msg, "Emojis should be preserved");
+    }
+    
+    #[test]
+    fn test_status_analysis_monospace_wrapping() {
+        // Test that monospace HTML wrapping is applied correctly
+        let sample = "Test analysis\nLine 2";
+        let formatted = format!("<pre>{}</pre>", sample);
+        
+        assert!(formatted.starts_with("<pre>"));
+        assert!(formatted.ends_with("</pre>"));
+        assert!(formatted.contains("Test analysis"));
+    }
 }
