@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use crate::strategy_filters::{StrategyFilter, StrategyConfig, OrderbookDepth, VolumeData};
 
 // ============================================================================
 // Configuration
@@ -475,22 +476,34 @@ pub struct CryptoArbEngine {
     pub use_momentum: bool,
     /// Use edge check (can be toggled off for more signals)
     pub use_edge_check: bool,
+    /// Strategy filter system (NEW - replaces old filters)
+    pub strategy_filter: StrategyFilter,
 }
 
 impl CryptoArbEngine {
     pub fn new(mock_mode: bool, max_position_usd: f64, min_position_usd: f64) -> Self {
+        // Create profitable strategy config with filters ENABLED by default
+        let strategy_config = StrategyConfig {
+            enable_momentum: true,
+            enable_orderbook: true,
+            enable_volume: false,  // Volume data not yet available
+            enable_time: true,
+            ..Default::default()
+        };
+        
         Self {
             price_state: Arc::new(RwLock::new(PriceState::default())),
             btc_market: None,
             eth_market: None,
             sol_market: None,
             xrp_market: None,
-            use_momentum: false,  // Momentum filter OFF for aggressive HFT
-            use_edge_check: false,  // Edge check OFF for aggressive HFT
+            use_momentum: false,  // Legacy - kept for backward compatibility
+            use_edge_check: false,  // Legacy - kept for backward compatibility
             market: None,
             mock_mode,
             max_position_usd,
             min_position_usd,
+            strategy_filter: StrategyFilter::new(strategy_config),
         }
     }
     

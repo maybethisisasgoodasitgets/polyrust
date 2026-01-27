@@ -29,6 +29,8 @@ pub mod settings;
 pub mod models;
 pub mod crypto_arb;
 pub mod telegram;
+pub mod strategy_filters;
+pub mod orderbook_fetcher;
 
 #[cfg(test)]
 mod resubmit_tests;

@@ -105,11 +105,29 @@ impl TelegramNotifier {
         let _ = self.send(&msg).await;
     }
     
+    /// Send filter validation results notification (NEW - for strategy filters)
+    pub async fn notify_filter_check(&self, asset: &str, filter_results_msg: &str) {
+        let msg = format!(
+            "🔍 <b>Filter Validation - {}</b>\n\n{}",
+            asset, filter_results_msg
+        );
+        let _ = self.send(&msg).await;
+    }
+    
     /// Send status update
     pub async fn notify_status(&self, total_trades: usize, open_positions: usize, pnl: f64, mode: &str) {
         let msg = format!(
             "📊 <b>Status Update</b>\n\nMode: {}\nTotal Trades: {}\nOpen Positions: {}\nP&L: ${:.2}\n\nBot running normally...",
             mode, total_trades, open_positions, pnl
+        );
+        let _ = self.send(&msg).await;
+    }
+    
+    /// Send low balance warning
+    pub async fn notify_low_balance(&self, balance: f64, min_recommended: f64) {
+        let msg = format!(
+            "⚠️ <b>Low Balance Warning</b>\n\nCurrent: ${:.2}\nRecommended: ${:.2}+\n\nUsing minimum position sizes for testing.",
+            balance, min_recommended
         );
         let _ = self.send(&msg).await;
     }
