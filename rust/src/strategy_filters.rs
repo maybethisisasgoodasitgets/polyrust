@@ -5,7 +5,7 @@
 /// 
 /// Each filter is independently testable and can be enabled/disabled.
 
-use chrono::{DateTime, Utc, Timelike};
+use chrono::{DateTime, Utc, Timelike, Datelike};
 use std::time::Instant;
 
 // ============================================================================

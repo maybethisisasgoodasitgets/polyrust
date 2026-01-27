@@ -8,7 +8,7 @@
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
