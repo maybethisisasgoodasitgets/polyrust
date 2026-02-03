@@ -4,7 +4,7 @@
 //! Checks if all required environment variables are set correctly
 //! and provides helpful error messages for beginners.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dotenvy::dotenv;
 use std::env;
 
@@ -23,7 +23,8 @@ fn main() -> Result<()> {
     // Check required variables
     check_private_key(&mut errors);
     check_funder_address(&mut errors);
-    check_target_whale_address(&mut errors);
+    // TARGET_WHALE_ADDRESS not needed for crypto-arbitrage bot
+    // check_target_whale_address(&mut errors);
     check_api_keys(&mut errors, &mut warnings);
     
     // Check optional variables with validation
