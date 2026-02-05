@@ -21,14 +21,14 @@ use crate::strategy_filters::{StrategyFilter, StrategyConfig, OrderbookDepth, Vo
 // ============================================================================
 
 /// Minimum price move (%) to trigger a bet
-pub const MIN_PRICE_MOVE_PCT: f64 = 0.10;  // 0.1% move
+pub const MIN_PRICE_MOVE_PCT: f64 = 0.05;  // Reduced from 0.10% for more activity
 
 /// Maximum odds to buy (e.g., 0.99 = 99 cents for $1 payout)
 /// Set very high to allow trading on decided markets
 pub const MAX_BUY_PRICE: f64 = 0.99;
 
 /// Minimum edge required (difference between true prob and market odds)
-pub const MIN_EDGE_PCT: f64 = 2.0;  // 2% edge minimum
+pub const MIN_EDGE_PCT: f64 = 1.0;  // Reduced from 2.0% to find more trades
 
 /// How often to check for opportunities (ms)
 pub const CHECK_INTERVAL_MS: u64 = 100;
@@ -582,30 +582,30 @@ impl CryptoArbEngine {
         // BTC: Lower thresholds since $95k price means 0.10% = $95 move (too high)
         // Other assets: Keep standard thresholds
         let min_move = match (asset, market.interval_minutes) {
-            // BTC thresholds (lowered - 0.04% = ~$40 at $95k)
-            (CryptoAsset::BTC, 5) => 0.02,       // 5-minute: 0.02% (~$19)
-            (CryptoAsset::BTC, 15) => 0.04,      // 15-minute: 0.04% (~$38)
-            (CryptoAsset::BTC, 60) => 0.08,      // 1-hour: 0.08% (~$76)
-            (CryptoAsset::BTC, 240) => 0.12,     // 4-hour: 0.12% (~$114)
-            (CryptoAsset::BTC, _) => 0.06,       // Default: 0.06% (~$57)
-            // ETH thresholds (standard)
-            (CryptoAsset::ETH, 5) => 0.05,       // 5-minute: 0.05%
-            (CryptoAsset::ETH, 15) => 0.10,      // 15-minute: 0.10%
-            (CryptoAsset::ETH, 60) => 0.20,      // 1-hour: 0.20%
-            (CryptoAsset::ETH, 240) => 0.30,     // 4-hour: 0.30%
-            (CryptoAsset::ETH, _) => 0.15,       // Default: 0.15%
-            // SOL thresholds (slightly lower - more volatile)
-            (CryptoAsset::SOL, 5) => 0.04,       // 5-minute: 0.04%
-            (CryptoAsset::SOL, 15) => 0.08,      // 15-minute: 0.08%
-            (CryptoAsset::SOL, 60) => 0.15,      // 1-hour: 0.15%
-            (CryptoAsset::SOL, 240) => 0.25,     // 4-hour: 0.25%
-            (CryptoAsset::SOL, _) => 0.10,       // Default: 0.10%
-            // XRP thresholds (slightly lower - more volatile)
-            (CryptoAsset::XRP, 5) => 0.04,       // 5-minute: 0.04%
-            (CryptoAsset::XRP, 15) => 0.08,      // 15-minute: 0.08%
-            (CryptoAsset::XRP, 60) => 0.15,      // 1-hour: 0.15%
-            (CryptoAsset::XRP, 240) => 0.25,     // 4-hour: 0.25%
-            (CryptoAsset::XRP, _) => 0.10,       // Default: 0.10%
+            // BTC thresholds (lowered for activity)
+            (CryptoAsset::BTC, 5) => 0.02,
+            (CryptoAsset::BTC, 15) => 0.03,      // 15-minute: 0.03% (was 0.04)
+            (CryptoAsset::BTC, 60) => 0.06,      // 1-hour: 0.06% (was 0.08)
+            (CryptoAsset::BTC, 240) => 0.10,     // 4-hour: 0.10% (was 0.12)
+            (CryptoAsset::BTC, _) => 0.05,       // Default: 0.05%
+            // ETH thresholds
+            (CryptoAsset::ETH, 5) => 0.04,
+            (CryptoAsset::ETH, 15) => 0.06,      // 15-minute: 0.06% (was 0.10)
+            (CryptoAsset::ETH, 60) => 0.15,      // 1-hour: 0.15% (was 0.20)
+            (CryptoAsset::ETH, 240) => 0.25,     // 4-hour: 0.25% (was 0.30)
+            (CryptoAsset::ETH, _) => 0.12,       // Default
+            // SOL thresholds
+            (CryptoAsset::SOL, 5) => 0.04,
+            (CryptoAsset::SOL, 15) => 0.06,      // 15-minute: 0.06% (was 0.08)
+            (CryptoAsset::SOL, 60) => 0.12,      // 1-hour: 0.12% (was 0.15)
+            (CryptoAsset::SOL, 240) => 0.20,     // 4-hour: 0.20% (was 0.25)
+            (CryptoAsset::SOL, _) => 0.08,       // Default
+            // XRP thresholds
+            (CryptoAsset::XRP, 5) => 0.04,
+            (CryptoAsset::XRP, 15) => 0.06,      // 15-minute: 0.06% (was 0.08)
+            (CryptoAsset::XRP, 60) => 0.12,      // 1-hour: 0.12% (was 0.15)
+            (CryptoAsset::XRP, 240) => 0.20,     // 4-hour: 0.20% (was 0.25)
+            (CryptoAsset::XRP, _) => 0.08,       // Default
         };
         
         // Need minimum price movement for this market type
@@ -666,11 +666,11 @@ impl CryptoArbEngine {
         // Calculate edge: if price moved X%, true probability is higher than market implies
         // Multiplier varies by market type - shorter timeframes = stronger signal per % move
         let prob_multiplier = match market.interval_minutes {
-            5 => 8.0,       // 5-minute: 0.05% move → 0.4% prob increase
-            15 => 5.0,      // 15-minute: 0.10% move → 0.5% prob increase
-            60 => 3.0,      // 1-hour: 0.20% move → 0.6% prob increase
-            240 => 2.0,     // 4-hour: 0.30% move → 0.6% prob increase
-            _ => 4.0,       // Default
+            5 => 8.0,
+            15 => 6.5,      // Increased from 5.0 (betting more confidently on 15m)
+            60 => 4.0,      // Increased from 3.0
+            240 => 3.0,     // Increased from 2.0
+            _ => 5.0,       // Default
         };
         
         // Boost edge calculation if momentum is strong and accelerating

@@ -368,9 +368,11 @@ async fn main() -> Result<()> {
         // Priority scoring: prefer 4h markets (longer trading window), then 15m, then daily
         // 4h = 0, 15m = 1, daily = 2, then add distance from 50%
         let interval_priority = match market.interval_minutes {
-            240 => 0.0,  // 4 hours - BEST (long trading window)
-            15 => 1.0,   // 15m - SECOND (very short trading window)
-            _ => 2.0,    // daily or other
+            15 => 0.0,   // 15m - BEST (most liquid/active now that 5m is gone)
+            60 => 1.0,   // 1h - Good fallback
+            240 => 2.0,  // 4h - Slower
+            5 => 5.0,    // 5m - Deprioritize (likely stale/broken if user says they don't exist)
+            _ => 3.0,    // daily or other
         };
         let score = interval_priority + distance_from_50;
         
