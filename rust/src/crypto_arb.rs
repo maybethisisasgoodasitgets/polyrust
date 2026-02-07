@@ -67,9 +67,11 @@ pub enum CryptoAsset {
 /// IMPORTANT: History must be time-based (not sample-count based), because Binance trade
 /// events can arrive many times per second. A fixed sample window makes "5s" velocity
 /// accidentally behave like "500ms" during busy periods.
-const PRICE_HISTORY_MAX_AGE_SECS: u64 = 120;
+const PRICE_HISTORY_MAX_AGE_SECS: u64 = 60 * 60 * 48; // 48h (enough for 1d window + slack)
 
 /// Hard cap on stored samples per asset (safety valve)
+///
+/// With 1m klines, 48h ≈ 2880 samples, so this is plenty.
 const PRICE_HISTORY_MAX_SAMPLES: usize = 50_000;
 
 /// Velocity window in seconds - how far back to look for quick moves
@@ -219,9 +221,11 @@ impl PriceState {
         }
     }
     
-    /// Calculate short-term velocity (price change over last N seconds)
-    /// This is the key metric for reactive trading - detects quick moves
+    /// Calculate price change percentage over the last N seconds.
+    ///
+    /// Note: after switching to 1m klines, this effectively works on a 1-minute grid.
     pub fn velocity_pct(&self, asset: CryptoAsset, window_secs: u64) -> f64 {
+
         let history = match asset {
             CryptoAsset::BTC => &self.btc_price_history,
             CryptoAsset::ETH => &self.eth_price_history,
@@ -254,6 +258,12 @@ impl PriceState {
         }
         
         ((current_price - start_price) / start_price) * 100.0
+    }
+
+    /// Convenience helper: return over the last N minutes.
+    #[inline]
+    pub fn return_pct_minutes(&self, asset: CryptoAsset, minutes: u64) -> f64 {
+        self.velocity_pct(asset, minutes.saturating_mul(60))
     }
     
     /// Calculate momentum score for an asset
@@ -483,14 +493,14 @@ pub struct ArbSignal {
 pub struct CryptoArbEngine {
     /// Shared price state
     price_state: Arc<RwLock<PriceState>>,
-    /// Current BTC market (if any)
-    btc_market: Option<LiveCryptoMarket>,
-    /// Current ETH market (if any)
-    eth_market: Option<LiveCryptoMarket>,
-    /// Current SOL market (if any)
-    sol_market: Option<LiveCryptoMarket>,
-    /// Current XRP market (if any)
-    xrp_market: Option<LiveCryptoMarket>,
+    /// Current BTC markets (may include multiple intervals like 1h/4h/1d)
+    btc_market: Vec<LiveCryptoMarket>,
+    /// Current ETH markets
+    eth_market: Vec<LiveCryptoMarket>,
+    /// Current SOL markets
+    sol_market: Vec<LiveCryptoMarket>,
+    /// Current XRP markets
+    xrp_market: Vec<LiveCryptoMarket>,
     /// Legacy single market field (for backward compatibility)
     market: Option<LiveCryptoMarket>,
     /// Mock mode (don't execute real trades)
@@ -520,10 +530,10 @@ impl CryptoArbEngine {
         
         Self {
             price_state: Arc::new(RwLock::new(PriceState::default())),
-            btc_market: None,
-            eth_market: None,
-            sol_market: None,
-            xrp_market: None,
+            btc_market: Vec::new(),
+            eth_market: Vec::new(),
+            sol_market: Vec::new(),
+            xrp_market: Vec::new(),
             use_momentum: false,  // Legacy - kept for backward compatibility
             use_edge_check: false,  // Legacy - kept for backward compatibility
             market: None,
@@ -544,44 +554,48 @@ impl CryptoArbEngine {
         self.market = Some(market);
     }
     
-    /// Set market for a specific asset (multi-market mode)
+    /// Add/update a market for a specific asset (multi-market mode).
+    ///
+    /// Polymarket can have multiple active markets per asset (e.g., 1h + 4h + 1d).
     pub fn set_market_for_asset(&mut self, market: LiveCryptoMarket) {
-        match market.asset {
-            CryptoAsset::BTC => self.btc_market = Some(market),
-            CryptoAsset::ETH => self.eth_market = Some(market),
-            CryptoAsset::SOL => self.sol_market = Some(market),
-            CryptoAsset::XRP => self.xrp_market = Some(market),
+        let markets = match market.asset {
+            CryptoAsset::BTC => &mut self.btc_market,
+            CryptoAsset::ETH => &mut self.eth_market,
+            CryptoAsset::SOL => &mut self.sol_market,
+            CryptoAsset::XRP => &mut self.xrp_market,
+        };
+
+        // Upsert by condition_id (unique per market)
+        if let Some(existing) = markets.iter_mut().find(|m| m.condition_id == market.condition_id) {
+            *existing = market;
+        } else {
+            markets.push(market);
         }
     }
-    
-    /// Clear market for a specific asset
+
+    /// Clear markets for a specific asset
     pub fn clear_market_for_asset(&mut self, asset: CryptoAsset) {
         match asset {
-            CryptoAsset::BTC => self.btc_market = None,
-            CryptoAsset::ETH => self.eth_market = None,
-            CryptoAsset::SOL => self.sol_market = None,
-            CryptoAsset::XRP => self.xrp_market = None,
+            CryptoAsset::BTC => self.btc_market.clear(),
+            CryptoAsset::ETH => self.eth_market.clear(),
+            CryptoAsset::SOL => self.sol_market.clear(),
+            CryptoAsset::XRP => self.xrp_market.clear(),
         }
     }
-    
-    /// Get current market for an asset
-    pub fn get_market(&self, asset: CryptoAsset) -> Option<&LiveCryptoMarket> {
+
+    /// Get current markets for an asset
+    pub fn get_markets(&self, asset: CryptoAsset) -> &[LiveCryptoMarket] {
         match asset {
-            CryptoAsset::BTC => self.btc_market.as_ref(),
-            CryptoAsset::ETH => self.eth_market.as_ref(),
-            CryptoAsset::SOL => self.sol_market.as_ref(),
-            CryptoAsset::XRP => self.xrp_market.as_ref(),
+            CryptoAsset::BTC => &self.btc_market,
+            CryptoAsset::ETH => &self.eth_market,
+            CryptoAsset::SOL => &self.sol_market,
+            CryptoAsset::XRP => &self.xrp_market,
         }
     }
-    
-    /// Check if we have an active market for an asset
+
+    /// Check if we have any active market for an asset
     pub fn has_market(&self, asset: CryptoAsset) -> bool {
-        match asset {
-            CryptoAsset::BTC => self.btc_market.is_some(),
-            CryptoAsset::ETH => self.eth_market.is_some(),
-            CryptoAsset::SOL => self.sol_market.is_some(),
-            CryptoAsset::XRP => self.xrp_market.is_some(),
-        }
+        !self.get_markets(asset).is_empty()
     }
     
     /// Check for arbitrage opportunity
@@ -836,39 +850,54 @@ impl CryptoArbEngine {
         analysis.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         
         let assets = [
-            (CryptoAsset::BTC, "BTC", self.btc_market.as_ref(), 0.02),   // 10x from 0.002
-            (CryptoAsset::ETH, "ETH", self.eth_market.as_ref(), 0.03),   // 10x from 0.003
-            (CryptoAsset::SOL, "SOL", self.sol_market.as_ref(), 0.04),   // 10x from 0.004
-            (CryptoAsset::XRP, "XRP", self.xrp_market.as_ref(), 0.04),   // 10x from 0.004
+            (CryptoAsset::BTC, "BTC", &self.btc_market, 0.02),
+            (CryptoAsset::ETH, "ETH", &self.eth_market, 0.03),
+            (CryptoAsset::SOL, "SOL", &self.sol_market, 0.04),
+            (CryptoAsset::XRP, "XRP", &self.xrp_market, 0.04),
         ];
         
         let mut all_below_threshold = true;
         let mut highest_pct = 0.0;
         let mut closest_asset = "None";
         
-        for (asset, name, market_opt, threshold) in assets.iter() {
+        for (asset, name, markets, _threshold_unused) in assets.iter() {
             let current_price = state.current_price(*asset);
             if current_price == 0.0 {
                 analysis.push_str(&format!("   ⚠️  {}: No price data available\n", name));
                 continue;
             }
-            
-            let velocity_5s = state.velocity_pct(*asset, 5);
-            let velocity_3s = state.velocity_pct(*asset, 3);
-            let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
-            let abs_velocity = velocity.abs();
-            
-            let pct_of_threshold = (abs_velocity / threshold) * 100.0;
+
+            // Returns aligned to longer-horizon markets
+            let r_60m = state.return_pct_minutes(*asset, 60);
+            let r_240m = state.return_pct_minutes(*asset, 240);
+            let r_1440m = state.return_pct_minutes(*asset, 1440);
+
+            // Use 4h move magnitude as the "how close" metric for quiet/loud verdicts
+            let abs_key = r_240m.abs();
+            let key_threshold = match asset {
+                // Very rough starter thresholds (tune with logs)
+                CryptoAsset::BTC => 0.30,
+                CryptoAsset::ETH => 0.50,
+                CryptoAsset::SOL => 0.80,
+                CryptoAsset::XRP => 0.80,
+            };
+
+            let pct_of_threshold = if key_threshold > 0.0 {
+                (abs_key / key_threshold) * 100.0
+            } else {
+                0.0
+            };
+
             if pct_of_threshold > highest_pct {
                 highest_pct = pct_of_threshold;
                 closest_asset = name;
             }
-            
-            if abs_velocity >= *threshold {
+
+            if abs_key >= key_threshold {
                 all_below_threshold = false;
             }
-            
-            let status_icon = if abs_velocity >= *threshold {
+
+            let status_icon = if abs_key >= key_threshold {
                 "✅"
             } else if pct_of_threshold >= 70.0 {
                 "🟡"
@@ -877,29 +906,42 @@ impl CryptoArbEngine {
             } else {
                 "⚪"
             };
-            
-            let dir_icon = if velocity >= 0.0 { "⬆" } else { "⬇" };
-            
+
+            let dir_icon = if r_240m >= 0.0 { "⬆" } else { "⬇" };
+
             analysis.push_str(&format!(
-                "   {} {}: ${:.2} {}{:+.4}% (need {:+.3}%) [{:.0}% of threshold]\n",
-                status_icon, name, current_price, dir_icon, velocity, threshold, pct_of_threshold
+                "   {} {}: ${:.2} {} 1h={:+.3}% 4h={:+.3}% 1d={:+.3}% (4h need {:+.2}%) [{:.0}%]\n",
+                status_icon,
+                name,
+                current_price,
+                dir_icon,
+                r_60m,
+                r_240m,
+                r_1440m,
+                key_threshold,
+                pct_of_threshold
             ));
-            
-            // Show market price if available
-            if let Some(market) = market_opt {
-                let yes_price = market.yes_ask;
-                let no_price = market.no_ask;
-                let price_status = if yes_price > MAX_BUY_PRICE || no_price > MAX_BUY_PRICE {
-                    "❌ TOO HIGH"
-                } else {
-                    "✓"
-                };
-                analysis.push_str(&format!(
-                    "      Market: YES={:.1}¢ NO={:.1}¢ {}\n",
-                    yes_price * 100.0, no_price * 100.0, price_status
-                ));
-            } else {
+
+            // Show best (cheapest) market if available
+            if markets.is_empty() {
                 analysis.push_str("      Market: No active market\n");
+            } else {
+                // show up to 3 intervals
+                let mut intervals: Vec<(u32, f64, f64)> = markets
+                    .iter()
+                    .map(|m| (m.interval_minutes, m.yes_ask, m.no_ask))
+                    .collect();
+                intervals.sort_by_key(|(mins, _, _)| *mins);
+
+                let mut line = String::from("      Markets: ");
+                for (i, (mins, yes, no)) in intervals.into_iter().take(3).enumerate() {
+                    if i > 0 {
+                        line.push_str(" | ");
+                    }
+                    line.push_str(&format!("{}m YES={:.1}¢ NO={:.1}¢", mins, yes * 100.0, no * 100.0));
+                }
+                line.push('\n');
+                analysis.push_str(&line);
             }
         }
         
@@ -928,112 +970,126 @@ impl CryptoArbEngine {
         analysis
     }
     
-    /// Check for arbitrage opportunity on a specific asset's market
-    /// VELOCITY-BASED: Reacts to quick price moves over last few seconds
+    /// Check for arbitrage opportunity for an asset across all its active markets.
+    ///
+    /// LONG-HORIZON MODE: For 1h/4h/1d markets, we use returns over 60m/240m/1440m
+    /// computed from 1m Binance klines (closed candles).
     pub async fn check_opportunity_for_asset(&self, asset: CryptoAsset) -> Option<ArbSignal> {
-        let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
-        
-        let market = match asset {
-            CryptoAsset::BTC => self.btc_market.as_ref()?,
-            CryptoAsset::ETH => self.eth_market.as_ref()?,
-            CryptoAsset::SOL => self.sol_market.as_ref()?,
-            CryptoAsset::XRP => self.xrp_market.as_ref()?,
+        let asset_name = match asset {
+            CryptoAsset::BTC => "BTC",
+            CryptoAsset::ETH => "ETH",
+            CryptoAsset::SOL => "SOL",
+            CryptoAsset::XRP => "XRP",
         };
-        
+
+        let markets = self.get_markets(asset);
+        if markets.is_empty() {
+            return None;
+        }
+
         let state = self.price_state.read().await;
-        
-        // Get current price
+
         let current_price = state.current_price(asset);
         if current_price == 0.0 {
             println!("   ⚠️ {} check skipped: no price data", asset_name);
             return None;
         }
-        
-        // === VELOCITY-BASED DETECTION ===
-        // Use short-term velocity (last 5 seconds) instead of interval start
-        // This reacts to QUICK moves, not slow drifts
-        let velocity_5s = state.velocity_pct(asset, 5);
-        let velocity_3s = state.velocity_pct(asset, 3);
-        
-        // Use the stronger of the two velocities
-        let velocity = if velocity_3s.abs() > velocity_5s.abs() { velocity_3s } else { velocity_5s };
-        let abs_velocity = velocity.abs();
-        
-        // CONSERVATIVE thresholds to avoid noise and mean reversion
-        // Only trade on meaningful moves, not small fluctuations
-        let min_velocity = match asset {
-            // BTC: 0.02% in 5 seconds = ~$18 move (10x increase from 0.002%)
-            CryptoAsset::BTC => 0.02,
-            // Altcoins: 0.03-0.04% (10x increase to filter out noise)
-            CryptoAsset::ETH => 0.03,
-            CryptoAsset::SOL => 0.04,
-            CryptoAsset::XRP => 0.04,
-        };
-        
-        if abs_velocity < min_velocity {
-            // Debug: Log when we're close but not quite there
-            if abs_velocity > min_velocity * 0.5 {
-                let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
-                println!("   🔍 {} velocity {:.4}% < threshold {:.4}% (${:.2} move needed)", 
-                    asset_name, abs_velocity, min_velocity, current_price * min_velocity / 100.0);
+
+        const MAX_ENTRY_PRICE: f64 = 0.60; // mean reversion guard
+
+        // Pick the best market (interval) right now
+        let mut best: Option<(usize, bool, f64, f64, f64, f64)> = None;
+        // tuple: (idx, bet_up, market_ask, ret_pct, min_move, score)
+
+        for (idx, m) in markets.iter().enumerate() {
+            let mins = m.interval_minutes as u64;
+
+            // Only support long-horizon markets here
+            if !matches!(mins, 60 | 240 | 1440) {
+                continue;
             }
-            return None;
+
+            let ret = state.return_pct_minutes(asset, mins);
+            let abs_ret = ret.abs();
+            let bet_up = ret >= 0.0;
+
+            // Baseline min moves (percent) per asset & horizon (starter values)
+            let min_move = match (asset, mins) {
+                (CryptoAsset::BTC, 60) => 0.10,
+                (CryptoAsset::BTC, 240) => 0.30,
+                (CryptoAsset::BTC, 1440) => 0.70,
+                (CryptoAsset::ETH, 60) => 0.15,
+                (CryptoAsset::ETH, 240) => 0.50,
+                (CryptoAsset::ETH, 1440) => 1.00,
+                (CryptoAsset::SOL, 60) => 0.25,
+                (CryptoAsset::SOL, 240) => 0.80,
+                (CryptoAsset::SOL, 1440) => 1.50,
+                (CryptoAsset::XRP, 60) => 0.25,
+                (CryptoAsset::XRP, 240) => 0.80,
+                (CryptoAsset::XRP, 1440) => 1.50,
+                _ => 999.0,
+            };
+
+            if abs_ret < min_move {
+                continue;
+            }
+
+            let market_ask = if bet_up { m.yes_ask } else { m.no_ask };
+
+            // Price guards
+            if market_ask > MAX_BUY_PRICE || market_ask > MAX_ENTRY_PRICE {
+                continue;
+            }
+
+            // Score: favor stronger move vs threshold and cheaper entry
+            let strength = abs_ret / min_move;
+            let price_penalty = market_ask.max(0.01);
+            let score = strength / price_penalty;
+
+            match best {
+                None => best = Some((idx, bet_up, market_ask, ret, min_move, score)),
+                Some((_, _, _, _, _, best_score)) if score > best_score => {
+                    best = Some((idx, bet_up, market_ask, ret, min_move, score))
+                }
+                _ => {}
+            }
         }
-        
-        // Direction based on velocity (not interval start)
-        let is_up = velocity > 0.0;
-        
-        // Debug: Log when we DO meet velocity threshold
-        let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
-        println!("   ✅ {} velocity threshold met: {:.4}% ({})", 
-            asset_name, abs_velocity, if is_up { "UP" } else { "DOWN" });
-        
-        let (bet_up, token_id, market_ask) = if is_up {
-            (true, market.yes_token_id.clone(), market.yes_ask)
+
+        let (idx, bet_up, market_ask, ret, min_move, score) = best?;
+        let m = &markets[idx];
+
+        println!(
+            "   ✅ {} best interval: {}m return={:+.3}% (min {:+.2}%) entry={:.1}¢ score={:.2}",
+            asset_name,
+            m.interval_minutes,
+            ret,
+            min_move,
+            market_ask * 100.0,
+            score
+        );
+
+        let (token_id, buy_price) = if bet_up {
+            (m.yes_token_id.clone(), m.yes_ask)
         } else {
-            (false, market.no_token_id.clone(), market.no_ask)
+            (m.no_token_id.clone(), m.no_ask)
         };
-        
-        // CRITICAL: Two price checks to avoid overpaying
-        // 1. Don't buy if price is too high (general limit)
-        if market_ask > MAX_BUY_PRICE {
-            let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
-            println!("   ⚠️ {} signal blocked: market price {:.2}¢ > max {:.0}¢ (no edge)", 
-                asset_name, market_ask * 100.0, MAX_BUY_PRICE * 100.0);
-            return None;
-        }
-        
-        // 2. MEAN REVERSION FILTER: Don't buy above 60¢
-        // Positions at 64-68¢ were reverting to 50¢, causing losses
-        // Only enter within 10¢ of fair value (50¢) to avoid mean reversion
-        const MAX_ENTRY_PRICE: f64 = 0.60;  // 60¢ max entry
-        if market_ask > MAX_ENTRY_PRICE {
-            let asset_name = match asset { CryptoAsset::BTC => "BTC", CryptoAsset::ETH => "ETH", CryptoAsset::SOL => "SOL", CryptoAsset::XRP => "XRP" };
-            println!("   🛑 {} signal blocked: price {:.2}¢ > max entry {:.0}¢ (mean reversion risk)", 
-                asset_name, market_ask * 100.0, MAX_ENTRY_PRICE * 100.0);
-            return None;
-        }
-        
-        // Simple confidence based on velocity strength
-        // Stronger velocity = higher confidence
-        let confidence = ((abs_velocity * 500.0).min(95.0).max(30.0)) as u8;
-        
-        // Simple edge calculation - velocity implies direction
-        let edge_pct = abs_velocity * 10.0;  // 0.01% velocity = 0.1% edge
-        
-        // Position size - use configured max for aggressive trading
-        let recommended_size = self.max_position_usd;
-        
+
+        // Confidence: simple mapping from score
+        let confidence = (score * 25.0).min(95.0).max(30.0) as u8;
+
+        // Edge proxy: how far beyond min_move we are (percent)
+        let edge_pct = (ret.abs() - min_move).max(0.0).min(10.0);
+
         Some(ArbSignal {
             bet_up,
             token_id,
-            buy_price: market_ask,
+            buy_price,
             edge_pct,
             crypto_price: current_price,
             asset,
-            price_change_pct: velocity,
+            price_change_pct: ret,
             confidence,
-            recommended_size_usd: recommended_size,
+            recommended_size_usd: self.max_position_usd,
         })
     }
 }
@@ -1706,10 +1762,10 @@ mod tests {
                 let now = Instant::now();
                 for i in 0..20 {
                     let price = if i < 10 { 89950.0 } else { 90000.0 }; // 0.05% move
-                    state.btc_price_history.push_back((now, price));
-                    state.eth_price_history.push_back((now, 3000.0));
-                    state.sol_price_history.push_back((now, 150.0));
-                    state.xrp_price_history.push_back((now, 2.0));
+                    state.btc_price_history.push_back((price, now));
+                    state.eth_price_history.push_back((3000.0, now));
+                    state.sol_price_history.push_back((150.0, now));
+                    state.xrp_price_history.push_back((2.0, now));
                 }
             }
             
@@ -1752,15 +1808,15 @@ mod tests {
                 // Create velocity of exactly 0.001% (50% of BTC threshold of 0.002%)
                 for i in 0..20 {
                     let price = if i < 10 { 89991.0 } else { 90000.0 }; // 0.01% move over 10 samples
-                    state.btc_price_history.push_back((now, price));
-                    state.eth_price_history.push_back((now, 3000.0));
+                    state.btc_price_history.push_back((price, now));
+                    state.eth_price_history.push_back((3000.0, now));
                 }
             }
             
             let analysis = engine.get_status_analysis().await;
             
-            // Should show percentage of threshold
-            assert!(analysis.contains("% of threshold"));
+            // Should show our long-horizon threshold format
+            assert!(analysis.contains("4h need"));
             // Should show icons indicating status levels
             assert!(analysis.contains("⚪") || analysis.contains("🟠") || analysis.contains("🟡") || analysis.contains("✅"));
         });
@@ -1778,21 +1834,21 @@ mod tests {
                 
                 let now = Instant::now();
                 for _ in 0..20 {
-                    state.btc_price_history.push_back((now, 90000.0));
+                    state.btc_price_history.push_back((90000.0, now));
                 }
             }
             
             // Add a market with high prices
-            engine.btc_market = Some(LiveCryptoMarket {
+            engine.set_market_for_asset(LiveCryptoMarket {
                 condition_id: "test".to_string(),
-                question_id: "test".to_string(),
-                description: "Test Market".to_string(),
                 yes_token_id: "123".to_string(),
                 no_token_id: "456".to_string(),
-                yes_ask: 0.90, // High price - should be flagged
+                yes_ask: 0.90, // High price
                 no_ask: 0.15,
+                end_time: 0,
+                interval_minutes: 60,
+                description: "Test Market".to_string(),
                 asset: CryptoAsset::BTC,
-                interval_minutes: 15,
             });
             
             let analysis = engine.get_status_analysis().await;
@@ -1822,8 +1878,8 @@ mod tests {
                     let btc_price = 90000.0 + (i as f64 * 5.0);
                     // ETH trending down
                     let eth_price = 3000.0 - (i as f64 * 0.5);
-                    state.btc_price_history.push_back((now, btc_price));
-                    state.eth_price_history.push_back((now, eth_price));
+                    state.btc_price_history.push_back((btc_price, now));
+                    state.eth_price_history.push_back((eth_price, now));
                 }
             }
             
