@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
@@ -61,8 +62,15 @@ pub enum CryptoAsset {
 // Price State
 // ============================================================================
 
-/// Number of price samples to keep for momentum calculation
-const MOMENTUM_WINDOW_SIZE: usize = 20;
+/// Price history retention (seconds)
+///
+/// IMPORTANT: History must be time-based (not sample-count based), because Binance trade
+/// events can arrive many times per second. A fixed sample window makes "5s" velocity
+/// accidentally behave like "500ms" during busy periods.
+const PRICE_HISTORY_MAX_AGE_SECS: u64 = 120;
+
+/// Hard cap on stored samples per asset (safety valve)
+const PRICE_HISTORY_MAX_SAMPLES: usize = 50_000;
 
 /// Velocity window in seconds - how far back to look for quick moves
 const VELOCITY_WINDOW_SECS: u64 = 5;
@@ -90,13 +98,13 @@ pub struct PriceState {
     /// Timestamp of interval start
     pub interval_start_time: Instant,
     /// Recent BTC prices for momentum calculation (newest last)
-    pub btc_price_history: Vec<(f64, Instant)>,
+    pub btc_price_history: VecDeque<(f64, Instant)>,
     /// Recent ETH prices for momentum calculation (newest last)
-    pub eth_price_history: Vec<(f64, Instant)>,
+    pub eth_price_history: VecDeque<(f64, Instant)>,
     /// Recent SOL prices for momentum calculation (newest last)
-    pub sol_price_history: Vec<(f64, Instant)>,
+    pub sol_price_history: VecDeque<(f64, Instant)>,
     /// Recent XRP prices for momentum calculation (newest last)
-    pub xrp_price_history: Vec<(f64, Instant)>,
+    pub xrp_price_history: VecDeque<(f64, Instant)>,
 }
 
 impl Default for PriceState {
@@ -112,10 +120,10 @@ impl Default for PriceState {
             xrp_interval_start_price: 0.0,
             last_update: Instant::now(),
             interval_start_time: Instant::now(),
-            btc_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
-            eth_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
-            sol_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
-            xrp_price_history: Vec::with_capacity(MOMENTUM_WINDOW_SIZE),
+            btc_price_history: VecDeque::with_capacity(4096),
+            eth_price_history: VecDeque::with_capacity(4096),
+            sol_price_history: VecDeque::with_capacity(4096),
+            xrp_price_history: VecDeque::with_capacity(4096),
         }
     }
 }
@@ -192,11 +200,22 @@ impl PriceState {
             CryptoAsset::XRP => &mut self.xrp_price_history,
         };
         
-        history.push((price, Instant::now()));
-        
-        // Keep only the last N samples
-        if history.len() > MOMENTUM_WINDOW_SIZE {
-            history.remove(0);
+        let now = Instant::now();
+        history.push_back((price, now));
+
+        // Time-based pruning: keep only recent samples (stable window in real seconds)
+        let cutoff = now - Duration::from_secs(PRICE_HISTORY_MAX_AGE_SECS);
+        while let Some(&(_, t)) = history.front() {
+            if t < cutoff {
+                history.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Safety valve: cap memory use during extremely high tick rates
+        while history.len() > PRICE_HISTORY_MAX_SAMPLES {
+            history.pop_front();
         }
     }
     
