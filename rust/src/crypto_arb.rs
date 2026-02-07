@@ -34,17 +34,17 @@ pub const MIN_EDGE_PCT: f64 = 1.0;  // Reduced from 2.0% to find more trades
 /// How often to check for opportunities (ms)
 pub const CHECK_INTERVAL_MS: u64 = 100;
 
-/// Binance WebSocket URL for BTC/USDT trades
-pub const BINANCE_BTC_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+/// Binance WebSocket URL for BTC/USDT 1m klines
+pub const BINANCE_BTC_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@kline_1m";
 
-/// Binance WebSocket URL for ETH/USDT trades
-pub const BINANCE_ETH_WS_URL: &str = "wss://stream.binance.com:9443/ws/ethusdt@trade";
+/// Binance WebSocket URL for ETH/USDT 1m klines
+pub const BINANCE_ETH_WS_URL: &str = "wss://stream.binance.com:9443/ws/ethusdt@kline_1m";
 
-/// Binance WebSocket URL for SOL/USDT trades
-pub const BINANCE_SOL_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@trade";
+/// Binance WebSocket URL for SOL/USDT 1m klines
+pub const BINANCE_SOL_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@kline_1m";
 
-/// Binance WebSocket URL for XRP/USDT trades
-pub const BINANCE_XRP_WS_URL: &str = "wss://stream.binance.com:9443/ws/xrpusdt@trade";
+/// Binance WebSocket URL for XRP/USDT 1m klines
+pub const BINANCE_XRP_WS_URL: &str = "wss://stream.binance.com:9443/ws/xrpusdt@kline_1m";
 
 /// Binance WebSocket URL for BTC/USDT ticker (more frequent updates)
 pub const BINANCE_TICKER_WS_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@ticker";
@@ -387,15 +387,23 @@ pub enum MomentumDirection {
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
-pub struct BinanceTrade {
+pub struct BinanceKlineEvent {
     #[serde(rename = "e")]
     pub event_type: String,
     #[serde(rename = "s")]
     pub symbol: String,
-    #[serde(rename = "p")]
-    pub price: String,
-    #[serde(rename = "T")]
-    pub trade_time: u64,
+    #[serde(rename = "k")]
+    pub kline: BinanceKline,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceKline {
+    /// Kline close price
+    #[serde(rename = "c")]
+    pub close_price: String,
+    /// Is this kline closed/final?
+    #[serde(rename = "x")]
+    pub is_final: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1109,10 +1117,15 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAss
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                if let Ok(trade) = serde_json::from_str::<BinanceTrade>(&text) {
-                    if let Ok(price) = trade.price.parse::<f64>() {
+                if let Ok(ev) = serde_json::from_str::<BinanceKlineEvent>(&text) {
+                    // Only record *final* 1m candle closes to reduce noise and align with 1h/4h/1d markets
+                    if !ev.kline.is_final {
+                        continue;
+                    }
+
+                    if let Ok(price) = ev.kline.close_price.parse::<f64>() {
                         let mut state = price_state.write().await;
-                        
+
                         match asset {
                             CryptoAsset::BTC => {
                                 if state.btc_interval_start_price == 0.0 {
@@ -1139,6 +1152,7 @@ async fn run_binance_feed(price_state: Arc<RwLock<PriceState>>, asset: CryptoAss
                                 state.xrp_price = price;
                             }
                         }
+
                         // Record price sample for momentum calculation
                         state.add_price_sample(asset, price);
                         state.last_update = Instant::now();
