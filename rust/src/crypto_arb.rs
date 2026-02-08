@@ -250,8 +250,9 @@ impl PriceState {
         }
         
         // If no prices in window, use the oldest available
-        let start_price = oldest_in_window.unwrap_or_else(|| history.first().map(|(p, _)| *p).unwrap_or(0.0));
-        let current_price = history.last().map(|(p, _)| *p).unwrap_or(0.0);
+        let start_price = oldest_in_window
+            .unwrap_or_else(|| history.front().map(|(p, _)| *p).unwrap_or(0.0));
+        let current_price = history.back().map(|(p, _)| *p).unwrap_or(0.0);
         
         if start_price == 0.0 {
             return 0.0;
