@@ -497,8 +497,8 @@ async fn main() -> Result<()> {
                     let direction = if signal.bet_up { "UP" } else { "DOWN" };
                     telegram.notify_signal(asset_name, signal.price_change_pct, direction).await;
                     
-                    // Get market info for this asset
-                    let market_info = engine.get_market(signal.asset);
+                    // Get market info for this asset (MULTI-MARKET: use the first curated market)
+                    let market_info = engine.get_markets(signal.asset).first();
                     let market_desc = market_info.map(|m| m.description.as_str()).unwrap_or("Unknown");
                     let interval_mins = market_info.map(|m| m.interval_minutes).unwrap_or(15);
                     let market_type = match interval_mins {
@@ -512,7 +512,7 @@ async fn main() -> Result<()> {
                     // === SAFETY CHECK: Validate real orderbook prices before trading ===
                     // Fetch actual market prices to ensure they're reasonable
                     let mut validated_signal = signal.clone();
-                    if let Some(mut market) = engine.get_market(signal.asset).cloned() {
+                    if let Some(mut market) = engine.get_markets(signal.asset).first().cloned() {
                         if let Err(e) = update_market_prices(&mut market).await {
                             let reason = format!("Orderbook not available - {}", e);
                             println!("   ⚠️ {} signal blocked: {}", asset_name, reason);
