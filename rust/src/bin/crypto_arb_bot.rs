@@ -658,20 +658,22 @@ async fn main() -> Result<()> {
             _ = market_price_log_interval.tick() => {
                 // Log current market prices to show user why we're not trading
                 println!("📊 CURRENT MARKET PRICES:");
-                if let Some(m) = engine.get_market(CryptoAsset::BTC) {
-                    println!("   🟠 BTC: YES={:.1}¢ NO={:.1}¢ | {}", 
+
+                // MULTI-MARKET: pick the first market we have for each asset (these are already curated upstream)
+                if let Some(m) = engine.get_markets(CryptoAsset::BTC).first() {
+                    println!("   🟠 BTC: YES={:.1}¢ NO={:.1}¢ | {}",
                         m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
                 }
-                if let Some(m) = engine.get_market(CryptoAsset::ETH) {
-                    println!("   🔵 ETH: YES={:.1}¢ NO={:.1}¢ | {}", 
+                if let Some(m) = engine.get_markets(CryptoAsset::ETH).first() {
+                    println!("   🔵 ETH: YES={:.1}¢ NO={:.1}¢ | {}",
                         m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
                 }
-                if let Some(m) = engine.get_market(CryptoAsset::SOL) {
-                    println!("   🟣 SOL: YES={:.1}¢ NO={:.1}¢ | {}", 
+                if let Some(m) = engine.get_markets(CryptoAsset::SOL).first() {
+                    println!("   🟣 SOL: YES={:.1}¢ NO={:.1}¢ | {}",
                         m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
                 }
-                if let Some(m) = engine.get_market(CryptoAsset::XRP) {
-                    println!("   ⚪ XRP: YES={:.1}¢ NO={:.1}¢ | {}", 
+                if let Some(m) = engine.get_markets(CryptoAsset::XRP).first() {
+                    println!("   ⚪ XRP: YES={:.1}¢ NO={:.1}¢ | {}",
                         m.yes_ask * 100.0, m.no_ask * 100.0, m.description);
                 }
             }

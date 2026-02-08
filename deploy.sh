@@ -2,7 +2,7 @@
 # Automated deployment script for crypto_arb_bot
 # Usage: ./deploy.sh [--skip-tests]
 
-set -e  # Exit on error
+set -euo pipefail  # Exit on error; fail pipelines if any command fails
 
 # Colors for output
 RED='\033[0;31m'
